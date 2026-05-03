@@ -1,0 +1,15 @@
+{
+  "name": "cloudwatch-observability-demo-infra",
+  "private": true,
+  "version": "0.0.1",
+  "main": "index.ts",
+  "devDependencies": {
+    "@types/node": "^20.12.0",
+    "typescript": "^5.4.5"
+  },
+  "dependencies": {
+    "@pulumi/aws": "^7.28.0",
+    "@pulumi/aws-native": "^1.62.0",
+    "@pulumi/pulumi": "^3.140.0"
+  }
+}

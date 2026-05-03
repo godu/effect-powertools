@@ -1,0 +1,7 @@
+name: cloudwatch-observability-demo
+runtime:
+  name: nodejs
+  options:
+    typescript: true
+    packagemanager: npm
+description: End-to-end CloudWatch observability demo (SQS → Lambda → S3, two runtimes).
