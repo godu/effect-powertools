@@ -3,11 +3,8 @@ import * as pulumi from "@pulumi/pulumi";
 
 export interface SloArgs {
   namePrefix: string;
-  // The values that Application Signals records as the service Name + Environment.
-  // For Lambda, ADOT reports `Name = <function name>` and `Environment = <stack>`.
-  serviceNameTs: pulumi.Input<string>;
-  serviceNamePy: pulumi.Input<string>;
-  environment: string;
+  producerName: pulumi.Input<string>;
+  consumerName: pulumi.Input<string>;
   tags: Record<string, string>;
 }
 
@@ -16,33 +13,40 @@ export function enableApplicationSignals(): awsNative.applicationsignals.Discove
   return new awsNative.applicationsignals.Discovery("appsignals-discovery", {});
 }
 
+// Metric-based SLOs (period-based SLI on AWS/Lambda metrics). These don't
+// depend on Application Signals service discovery, so they work without ADOT
+// instrumentation.
 export function createSlos(
   args: SloArgs,
   parent?: pulumi.Resource,
 ): awsNative.applicationsignals.ServiceLevelObjective[] {
-  const opts: pulumi.ResourceOptions | undefined = parent ? { dependsOn: [parent] } : undefined;
-  const tagList = Object.entries(args.tags).map(([key, value]) => ({ key, value }));
+  const opts: pulumi.ResourceOptions | undefined = parent
+    ? { dependsOn: [parent] }
+    : undefined;
+  const tagList = Object.entries(args.tags).map(([key, value]) => ({
+    key,
+    value,
+  }));
   const slos: awsNative.applicationsignals.ServiceLevelObjective[] = [];
 
-  for (const [runtime, serviceName] of [
-    ["ts", args.serviceNameTs],
-    ["py", args.serviceNamePy],
+  for (const [role, fnName] of [
+    ["producer", args.producerName],
+    ["consumer", args.consumerName],
   ] as const) {
-    const keyAttrs = lambdaKeyAttributes(serviceName, args.environment);
     slos.push(
       latencySlo(
-        `${runtime}-latency-slo`,
-        `${args.namePrefix}-${runtime}-latency-p95`,
-        runtime,
-        keyAttrs,
+        `${role}-latency-slo`,
+        `${args.namePrefix}-${role}-latency-p95`,
+        role,
+        fnName,
         tagList,
         opts,
       ),
       availabilitySlo(
-        `${runtime}-availability-slo`,
-        `${args.namePrefix}-${runtime}-availability`,
-        runtime,
-        keyAttrs,
+        `${role}-availability-slo`,
+        `${args.namePrefix}-${role}-availability`,
+        role,
+        fnName,
         tagList,
         opts,
       ),
@@ -52,22 +56,11 @@ export function createSlos(
   return slos;
 }
 
-type KeyAttrs = { [key: string]: pulumi.Input<string> };
-
-const lambdaKeyAttributes = (
-  serviceName: pulumi.Input<string>,
-  environment: string,
-): KeyAttrs => ({
-  Type: "Service",
-  Name: serviceName,
-  Environment: environment,
-});
-
 function latencySlo(
   pulumiName: string,
   awsName: string,
-  runtime: string,
-  keyAttrs: KeyAttrs,
+  role: string,
+  fnName: pulumi.Input<string>,
   tagList: { key: string; value: string }[],
   opts: pulumi.ResourceOptions | undefined,
 ): awsNative.applicationsignals.ServiceLevelObjective {
@@ -75,19 +68,28 @@ function latencySlo(
     pulumiName,
     {
       name: awsName,
-      description: `Latency P95 < 1000 ms for ${runtime} lambda`,
+      description: `Latency P95 < 1000 ms for ${role} lambda`,
       sli: {
         comparisonOperator:
-          awsNative.types.enums.applicationsignals.ServiceLevelObjectiveSliComparisonOperator
-            .LessThan,
+          awsNative.types.enums.applicationsignals
+            .ServiceLevelObjectiveSliComparisonOperator.LessThan,
         metricThreshold: 1000,
         sliMetric: {
-          metricType:
-            awsNative.types.enums.applicationsignals.ServiceLevelObjectiveSliMetricMetricType
-              .Latency,
-          statistic: "p95",
-          keyAttributes: keyAttrs,
-          periodSeconds: 60,
+          metricDataQueries: [
+            {
+              id: "m1",
+              returnData: true,
+              metricStat: {
+                metric: {
+                  namespace: "AWS/Lambda",
+                  metricName: "Duration",
+                  dimensions: [{ name: "FunctionName", value: fnName }],
+                },
+                period: 60,
+                stat: "p95",
+              },
+            },
+          ],
         },
       },
       goal: {
@@ -97,7 +99,8 @@ function latencySlo(
           rollingInterval: {
             duration: 7,
             durationUnit:
-              awsNative.types.enums.applicationsignals.ServiceLevelObjectiveDurationUnit.Day,
+              awsNative.types.enums.applicationsignals
+                .ServiceLevelObjectiveDurationUnit.Day,
           },
         },
       },
@@ -110,8 +113,8 @@ function latencySlo(
 function availabilitySlo(
   pulumiName: string,
   awsName: string,
-  runtime: string,
-  keyAttrs: KeyAttrs,
+  role: string,
+  fnName: pulumi.Input<string>,
   tagList: { key: string; value: string }[],
   opts: pulumi.ResourceOptions | undefined,
 ): awsNative.applicationsignals.ServiceLevelObjective {
@@ -119,18 +122,47 @@ function availabilitySlo(
     pulumiName,
     {
       name: awsName,
-      description: `Availability > 99 % for ${runtime} lambda`,
+      description: `Availability ≥ 99 % for ${role} lambda`,
       sli: {
         comparisonOperator:
-          awsNative.types.enums.applicationsignals.ServiceLevelObjectiveSliComparisonOperator
-            .GreaterThanOrEqualTo,
+          awsNative.types.enums.applicationsignals
+            .ServiceLevelObjectiveSliComparisonOperator.GreaterThanOrEqualTo,
         metricThreshold: 99,
         sliMetric: {
-          metricType:
-            awsNative.types.enums.applicationsignals.ServiceLevelObjectiveSliMetricMetricType
-              .Availability,
-          keyAttributes: keyAttrs,
-          periodSeconds: 60,
+          metricDataQueries: [
+            {
+              id: "invocations",
+              returnData: false,
+              metricStat: {
+                metric: {
+                  namespace: "AWS/Lambda",
+                  metricName: "Invocations",
+                  dimensions: [{ name: "FunctionName", value: fnName }],
+                },
+                period: 60,
+                stat: "Sum",
+              },
+            },
+            {
+              id: "errors",
+              returnData: false,
+              metricStat: {
+                metric: {
+                  namespace: "AWS/Lambda",
+                  metricName: "Errors",
+                  dimensions: [{ name: "FunctionName", value: fnName }],
+                },
+                period: 60,
+                stat: "Sum",
+              },
+            },
+            {
+              id: "availability",
+              returnData: true,
+              expression:
+                "100 * (1 - (FILL(errors, 0) / IF(invocations > 0, invocations, 1)))",
+            },
+          ],
         },
       },
       goal: {
@@ -140,7 +172,8 @@ function availabilitySlo(
           rollingInterval: {
             duration: 7,
             durationUnit:
-              awsNative.types.enums.applicationsignals.ServiceLevelObjectiveDurationUnit.Day,
+              awsNative.types.enums.applicationsignals
+                .ServiceLevelObjectiveDurationUnit.Day,
           },
         },
       },

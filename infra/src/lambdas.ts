@@ -2,125 +2,52 @@ import * as aws from "@pulumi/aws";
 import * as pulumi from "@pulumi/pulumi";
 import * as path from "path";
 import {
-  adotJsLayerArn,
-  adotPythonLayerArn,
+  powertoolsPythonLayerArn,
+  powertoolsTypescriptLayerArn,
   lambdaInsightsArmArn,
-  lambdaInsightsX86Arn,
 } from "../layers";
 
-export interface LambdaArgs {
+const POWERTOOLS_NAMESPACE = "cloudwatch-observability-demo";
+
+export interface PipelineLambdaArgs {
   namePrefix: string;
+  queue: aws.sqs.Queue;
   dataBucket: aws.s3.Bucket;
-  tsQueue: aws.sqs.Queue;
-  pyQueue: aws.sqs.Queue;
-  serviceNameTs: string;
-  serviceNamePy: string;
   tags: Record<string, string>;
 }
 
-export interface LambdaResult {
-  ts: aws.lambda.Function;
-  py: aws.lambda.Function;
-  tsLogGroup: aws.cloudwatch.LogGroup;
-  pyLogGroup: aws.cloudwatch.LogGroup;
+export interface PipelineLambdas {
+  producer: aws.lambda.Function;
+  consumer: aws.lambda.Function;
+  producerLogGroup: aws.cloudwatch.LogGroup;
+  consumerLogGroup: aws.cloudwatch.LogGroup;
 }
 
-export function createLambdas(args: LambdaArgs): LambdaResult {
-  const ts = createTsLambda(args);
-  const py = createPyLambda(args);
-  return ts.merge(py);
+export function createLambdas(args: PipelineLambdaArgs): PipelineLambdas {
+  const producer = createProducerLambda(args);
+  const consumer = createConsumerLambda(args);
+  return {
+    producer: producer.fn,
+    consumer: consumer.fn,
+    producerLogGroup: producer.logGroup,
+    consumerLogGroup: consumer.logGroup,
+  };
 }
 
-interface PartialResult {
+interface FnResult {
   fn: aws.lambda.Function;
   logGroup: aws.cloudwatch.LogGroup;
-  merge: (other: PartialResult) => LambdaResult;
 }
 
-function createTsLambda(args: LambdaArgs): PartialResult {
-  const role = createRole({
-    runtime: "ts",
+function createProducerLambda(args: PipelineLambdaArgs): FnResult {
+  const role = createProducerRole({
     namePrefix: args.namePrefix,
-    queueArn: args.tsQueue.arn,
-    bucketArn: args.dataBucket.arn,
-    bucketPrefix: "messages/typescript/",
+    queueArn: args.queue.arn,
     tags: args.tags,
   });
 
-  const fnName = `${args.namePrefix}-ts`;
-  const logGroup = new aws.cloudwatch.LogGroup("ts-log", {
-    name: `/aws/lambda/${fnName}`,
-    retentionInDays: 7,
-    tags: args.tags,
-  });
-
-  const handlerPath = path.join(
-    __dirname,
-    "..",
-    "..",
-    "lambdas",
-    "typescript",
-    "dist",
-    "handler.js",
-  );
-
-  const fn = new aws.lambda.Function(
-    "ts",
-    {
-      name: fnName,
-      role: role.arn,
-      runtime: aws.lambda.Runtime.NodeJS20dX,
-      architectures: ["arm64"],
-      handler: "handler.handler",
-      memorySize: 256,
-      timeout: 10,
-      code: new pulumi.asset.AssetArchive({
-        "handler.js": new pulumi.asset.FileAsset(handlerPath),
-      }),
-      layers: [adotJsLayerArn, lambdaInsightsArmArn],
-      // Active Tracing is required for ADOT to record AWS SDK calls (S3 PutObject)
-      // as downstream service dependencies in the AppSignals service map.
-      // PassThrough drops those edges. The trade-off: the X-Ray Trace Map will
-      // show multiple segment types per Lambda (AWS::Lambda, AWS::Lambda::Function,
-      // and ADOT's untyped span) — an inherent X-Ray model limitation. Users
-      // should use the AppSignals service map for the consolidated view.
-      tracingConfig: { mode: "Active" },
-      environment: {
-        variables: {
-          AWS_LAMBDA_EXEC_WRAPPER: "/opt/otel-instrument",
-          OTEL_AWS_APPLICATION_SIGNALS_ENABLED: "true",
-          OTEL_RESOURCE_ATTRIBUTES: pulumi.interpolate`service.name=${args.serviceNameTs},deployment.environment=${pulumi.getStack()}`,
-          DATA_BUCKET: args.dataBucket.bucket,
-        },
-      },
-      tags: args.tags,
-    },
-    { dependsOn: [logGroup] },
-  );
-
-  new aws.lambda.EventSourceMapping("ts-esm", {
-    eventSourceArn: args.tsQueue.arn,
-    functionName: fn.arn,
-    batchSize: 10,
-    maximumBatchingWindowInSeconds: 5,
-    functionResponseTypes: ["ReportBatchItemFailures"],
-  });
-
-  return wrap(fn, logGroup, "ts");
-}
-
-function createPyLambda(args: LambdaArgs): PartialResult {
-  const role = createRole({
-    runtime: "py",
-    namePrefix: args.namePrefix,
-    queueArn: args.pyQueue.arn,
-    bucketArn: args.dataBucket.arn,
-    bucketPrefix: "messages/python/",
-    tags: args.tags,
-  });
-
-  const fnName = `${args.namePrefix}-py`;
-  const logGroup = new aws.cloudwatch.LogGroup("py-log", {
+  const fnName = `${args.namePrefix}-producer`;
+  const logGroup = new aws.cloudwatch.LogGroup("producer-log", {
     name: `/aws/lambda/${fnName}`,
     retentionInDays: 7,
     tags: args.tags,
@@ -137,32 +64,27 @@ function createPyLambda(args: LambdaArgs): PartialResult {
   );
 
   const fn = new aws.lambda.Function(
-    "py",
+    "producer",
     {
       name: fnName,
       role: role.arn,
       runtime: aws.lambda.Runtime.Python3d12,
-      architectures: ["x86_64"],
+      architectures: ["arm64"],
       handler: "handler.handler",
       memorySize: 256,
       timeout: 10,
       code: new pulumi.asset.AssetArchive({
         "handler.py": new pulumi.asset.FileAsset(handlerPath),
       }),
-      layers: [adotPythonLayerArn, lambdaInsightsX86Arn],
-      // Active Tracing is required for ADOT to record AWS SDK calls (S3 PutObject)
-      // as downstream service dependencies in the AppSignals service map.
-      // PassThrough drops those edges. The trade-off: the X-Ray Trace Map will
-      // show multiple segment types per Lambda (AWS::Lambda, AWS::Lambda::Function,
-      // and ADOT's untyped span) — an inherent X-Ray model limitation. Users
-      // should use the AppSignals service map for the consolidated view.
+      layers: [powertoolsPythonLayerArn, lambdaInsightsArmArn],
       tracingConfig: { mode: "Active" },
       environment: {
         variables: {
-          AWS_LAMBDA_EXEC_WRAPPER: "/opt/otel-instrument",
-          OTEL_AWS_APPLICATION_SIGNALS_ENABLED: "true",
-          OTEL_RESOURCE_ATTRIBUTES: pulumi.interpolate`service.name=${args.serviceNamePy},deployment.environment=${pulumi.getStack()}`,
-          DATA_BUCKET: args.dataBucket.bucket,
+          QUEUE_URL: args.queue.url,
+          POWERTOOLS_SERVICE_NAME: fnName,
+          POWERTOOLS_METRICS_NAMESPACE: POWERTOOLS_NAMESPACE,
+          POWERTOOLS_LOG_LEVEL: "INFO",
+          POWERTOOLS_LOGGER_LOG_EVENT: "false",
         },
       },
       tags: args.tags,
@@ -170,19 +92,110 @@ function createPyLambda(args: LambdaArgs): PartialResult {
     { dependsOn: [logGroup] },
   );
 
-  new aws.lambda.EventSourceMapping("py-esm", {
-    eventSourceArn: args.pyQueue.arn,
+  return { fn, logGroup };
+}
+
+function createConsumerLambda(args: PipelineLambdaArgs): FnResult {
+  const role = createConsumerRole({
+    namePrefix: args.namePrefix,
+    queueArn: args.queue.arn,
+    bucketArn: args.dataBucket.arn,
+    bucketPrefix: "orders/",
+    tags: args.tags,
+  });
+
+  const fnName = `${args.namePrefix}-consumer`;
+  const logGroup = new aws.cloudwatch.LogGroup("consumer-log", {
+    name: `/aws/lambda/${fnName}`,
+    retentionInDays: 7,
+    tags: args.tags,
+  });
+
+  const handlerPath = path.join(
+    __dirname,
+    "..",
+    "..",
+    "lambdas",
+    "typescript",
+    "dist",
+    "handler.js",
+  );
+
+  const fn = new aws.lambda.Function(
+    "consumer",
+    {
+      name: fnName,
+      role: role.arn,
+      runtime: aws.lambda.Runtime.NodeJS20dX,
+      architectures: ["arm64"],
+      handler: "handler.handler",
+      memorySize: 256,
+      timeout: 10,
+      code: new pulumi.asset.AssetArchive({
+        "handler.js": new pulumi.asset.FileAsset(handlerPath),
+      }),
+      layers: [powertoolsTypescriptLayerArn, lambdaInsightsArmArn],
+      tracingConfig: { mode: "Active" },
+      environment: {
+        variables: {
+          DATA_BUCKET: args.dataBucket.bucket,
+          POWERTOOLS_SERVICE_NAME: fnName,
+          POWERTOOLS_METRICS_NAMESPACE: POWERTOOLS_NAMESPACE,
+          POWERTOOLS_LOG_LEVEL: "INFO",
+          POWERTOOLS_LOGGER_LOG_EVENT: "false",
+        },
+      },
+      tags: args.tags,
+    },
+    { dependsOn: [logGroup] },
+  );
+
+  new aws.lambda.EventSourceMapping("consumer-esm", {
+    eventSourceArn: args.queue.arn,
     functionName: fn.arn,
     batchSize: 10,
     maximumBatchingWindowInSeconds: 5,
     functionResponseTypes: ["ReportBatchItemFailures"],
   });
 
-  return wrap(fn, logGroup, "py");
+  return { fn, logGroup };
 }
 
-interface RoleArgs {
-  runtime: "ts" | "py";
+interface ProducerRoleArgs {
+  namePrefix: string;
+  queueArn: pulumi.Output<string>;
+  tags: Record<string, string>;
+}
+
+function createProducerRole(args: ProducerRoleArgs): aws.iam.Role {
+  const role = new aws.iam.Role("producer-role", {
+    name: `${args.namePrefix}-producer-role`,
+    assumeRolePolicy: assumeLambda,
+    tags: args.tags,
+  });
+
+  attachManagedPolicies(role, "producer");
+
+  new aws.iam.RolePolicy("producer-inline", {
+    role: role.id,
+    policy: args.queueArn.apply((queueArn) =>
+      JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [
+          {
+            Effect: "Allow",
+            Action: ["sqs:SendMessage"],
+            Resource: queueArn,
+          },
+        ],
+      }),
+    ),
+  });
+
+  return role;
+}
+
+interface ConsumerRoleArgs {
   namePrefix: string;
   queueArn: pulumi.Output<string>;
   bucketArn: pulumi.Output<string>;
@@ -190,41 +203,16 @@ interface RoleArgs {
   tags: Record<string, string>;
 }
 
-function createRole(args: RoleArgs): aws.iam.Role {
-  const role = new aws.iam.Role(`${args.runtime}-role`, {
-    name: `${args.namePrefix}-${args.runtime}-role`,
-    assumeRolePolicy: JSON.stringify({
-      Version: "2012-10-17",
-      Statement: [
-        {
-          Effect: "Allow",
-          Principal: { Service: "lambda.amazonaws.com" },
-          Action: "sts:AssumeRole",
-        },
-      ],
-    }),
+function createConsumerRole(args: ConsumerRoleArgs): aws.iam.Role {
+  const role = new aws.iam.Role("consumer-role", {
+    name: `${args.namePrefix}-consumer-role`,
+    assumeRolePolicy: assumeLambda,
     tags: args.tags,
   });
 
-  for (const [name, arn] of [
-    ["basic", "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"],
-    ["xray", "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"],
-    [
-      "insights",
-      "arn:aws:iam::aws:policy/CloudWatchLambdaInsightsExecutionRolePolicy",
-    ],
-    [
-      "appsignals",
-      "arn:aws:iam::aws:policy/CloudWatchApplicationSignalsFullAccess",
-    ],
-  ] as const) {
-    new aws.iam.RolePolicyAttachment(`${args.runtime}-${name}`, {
-      role: role.name,
-      policyArn: arn,
-    });
-  }
+  attachManagedPolicies(role, "consumer");
 
-  new aws.iam.RolePolicy(`${args.runtime}-inline`, {
+  new aws.iam.RolePolicy("consumer-inline", {
     role: role.id,
     policy: pulumi
       .all([args.queueArn, args.bucketArn])
@@ -255,29 +243,29 @@ function createRole(args: RoleArgs): aws.iam.Role {
   return role;
 }
 
-function wrap(
-  fn: aws.lambda.Function,
-  logGroup: aws.cloudwatch.LogGroup,
-  runtime: "ts" | "py",
-): PartialResult {
-  return {
-    fn,
-    logGroup,
-    merge(other) {
-      if (runtime === "ts") {
-        return {
-          ts: fn,
-          py: other.fn,
-          tsLogGroup: logGroup,
-          pyLogGroup: other.logGroup,
-        };
-      }
-      return {
-        ts: other.fn,
-        py: fn,
-        tsLogGroup: other.logGroup,
-        pyLogGroup: logGroup,
-      };
+const assumeLambda = JSON.stringify({
+  Version: "2012-10-17",
+  Statement: [
+    {
+      Effect: "Allow",
+      Principal: { Service: "lambda.amazonaws.com" },
+      Action: "sts:AssumeRole",
     },
-  };
+  ],
+});
+
+function attachManagedPolicies(role: aws.iam.Role, prefix: string): void {
+  for (const [name, arn] of [
+    ["basic", "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"],
+    ["xray", "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"],
+    [
+      "insights",
+      "arn:aws:iam::aws:policy/CloudWatchLambdaInsightsExecutionRolePolicy",
+    ],
+  ] as const) {
+    new aws.iam.RolePolicyAttachment(`${prefix}-${name}`, {
+      role: role.name,
+      policyArn: arn,
+    });
+  }
 }

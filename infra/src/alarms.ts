@@ -2,46 +2,40 @@ import * as aws from "@pulumi/aws";
 
 export interface AlarmArgs {
   namePrefix: string;
-  tsLambda: aws.lambda.Function;
-  pyLambda: aws.lambda.Function;
-  tsDlq: aws.sqs.Queue;
-  pyDlq: aws.sqs.Queue;
+  producer: aws.lambda.Function;
+  consumer: aws.lambda.Function;
+  dlq: aws.sqs.Queue;
   tags: Record<string, string>;
 }
 
 export function createAlarms(args: AlarmArgs): aws.cloudwatch.MetricAlarm[] {
   const alarms: aws.cloudwatch.MetricAlarm[] = [];
 
-  for (const [runtime, fn] of [
-    ["ts", args.tsLambda],
-    ["py", args.pyLambda],
+  for (const [role, fn] of [
+    ["producer", args.producer],
+    ["consumer", args.consumer],
   ] as const) {
     alarms.push(
-      lambdaErrorsAlarm(args.namePrefix, runtime, fn, args.tags),
-      lambdaDurationAlarm(args.namePrefix, runtime, fn, args.tags),
-      lambdaThrottlesAlarm(args.namePrefix, runtime, fn, args.tags),
+      lambdaErrorsAlarm(args.namePrefix, role, fn, args.tags),
+      lambdaDurationAlarm(args.namePrefix, role, fn, args.tags),
+      lambdaThrottlesAlarm(args.namePrefix, role, fn, args.tags),
     );
   }
 
-  for (const [runtime, dlq] of [
-    ["ts", args.tsDlq],
-    ["py", args.pyDlq],
-  ] as const) {
-    alarms.push(dlqDepthAlarm(args.namePrefix, runtime, dlq, args.tags));
-  }
+  alarms.push(dlqDepthAlarm(args.namePrefix, args.dlq, args.tags));
 
   return alarms;
 }
 
 function lambdaErrorsAlarm(
   prefix: string,
-  runtime: string,
+  role: string,
   fn: aws.lambda.Function,
   tags: Record<string, string>,
 ): aws.cloudwatch.MetricAlarm {
-  return new aws.cloudwatch.MetricAlarm(`${runtime}-errors-alarm`, {
-    name: `${prefix}-${runtime}-errors`,
-    alarmDescription: `${runtime} lambda errors over 5 min`,
+  return new aws.cloudwatch.MetricAlarm(`${role}-errors-alarm`, {
+    name: `${prefix}-${role}-errors`,
+    alarmDescription: `${role} lambda errors over 5 min`,
     namespace: "AWS/Lambda",
     metricName: "Errors",
     statistic: "Sum",
@@ -57,13 +51,13 @@ function lambdaErrorsAlarm(
 
 function lambdaDurationAlarm(
   prefix: string,
-  runtime: string,
+  role: string,
   fn: aws.lambda.Function,
   tags: Record<string, string>,
 ): aws.cloudwatch.MetricAlarm {
-  return new aws.cloudwatch.MetricAlarm(`${runtime}-duration-alarm`, {
-    name: `${prefix}-${runtime}-duration-p99`,
-    alarmDescription: `${runtime} lambda P99 duration > 3000 ms over 5 min`,
+  return new aws.cloudwatch.MetricAlarm(`${role}-duration-alarm`, {
+    name: `${prefix}-${role}-duration-p99`,
+    alarmDescription: `${role} lambda P99 duration > 3000 ms over 5 min`,
     namespace: "AWS/Lambda",
     metricName: "Duration",
     extendedStatistic: "p99",
@@ -79,13 +73,13 @@ function lambdaDurationAlarm(
 
 function lambdaThrottlesAlarm(
   prefix: string,
-  runtime: string,
+  role: string,
   fn: aws.lambda.Function,
   tags: Record<string, string>,
 ): aws.cloudwatch.MetricAlarm {
-  return new aws.cloudwatch.MetricAlarm(`${runtime}-throttles-alarm`, {
-    name: `${prefix}-${runtime}-throttles`,
-    alarmDescription: `${runtime} lambda throttles over 5 min`,
+  return new aws.cloudwatch.MetricAlarm(`${role}-throttles-alarm`, {
+    name: `${prefix}-${role}-throttles`,
+    alarmDescription: `${role} lambda throttles over 5 min`,
     namespace: "AWS/Lambda",
     metricName: "Throttles",
     statistic: "Sum",
@@ -101,13 +95,12 @@ function lambdaThrottlesAlarm(
 
 function dlqDepthAlarm(
   prefix: string,
-  runtime: string,
   dlq: aws.sqs.Queue,
   tags: Record<string, string>,
 ): aws.cloudwatch.MetricAlarm {
-  return new aws.cloudwatch.MetricAlarm(`${runtime}-dlq-alarm`, {
-    name: `${prefix}-${runtime}-dlq-depth`,
-    alarmDescription: `${runtime} DLQ has messages (failed to process)`,
+  return new aws.cloudwatch.MetricAlarm("dlq-alarm", {
+    name: `${prefix}-dlq-depth`,
+    alarmDescription: "DLQ has messages (consumer failed to process)",
     namespace: "AWS/SQS",
     metricName: "ApproximateNumberOfMessagesVisible",
     statistic: "Maximum",

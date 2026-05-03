@@ -1,5 +1,4 @@
 config:
   aws:region: eu-west-3
   aws-native:region: eu-west-3
-  cloudwatch-observability-demo:enableSlos: "true"
 encryptionsalt: v1:OXSVF/ttChY=:v1:Ugu/7J+IaAQelKXF:H6rP2Qzl4eZfFkVW3QFj3xRb8EM+Iw==
