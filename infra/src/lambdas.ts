@@ -78,7 +78,12 @@ function createTsLambda(args: LambdaArgs): PartialResult {
         "handler.js": new pulumi.asset.FileAsset(handlerPath),
       }),
       layers: [adotJsLayerArn, lambdaInsightsArmArn],
-      tracingConfig: { mode: "Active" },
+      // X-Ray Active Tracing is intentionally OFF: with ADOT Application Signals
+      // enabled, the Lambda runtime would emit a second pair of segments
+      // (AWS::Lambda + AWS::Lambda::Function) that show up as duplicate nodes
+      // in the X-Ray service map alongside ADOT's own span. AppSignals docs:
+      // "You don't need to enable X-Ray active tracing on the Lambda function."
+      tracingConfig: { mode: "PassThrough" },
       environment: {
         variables: {
           AWS_LAMBDA_EXEC_WRAPPER: "/opt/otel-instrument",
@@ -144,7 +149,12 @@ function createPyLambda(args: LambdaArgs): PartialResult {
         "handler.py": new pulumi.asset.FileAsset(handlerPath),
       }),
       layers: [adotPythonLayerArn, lambdaInsightsX86Arn],
-      tracingConfig: { mode: "Active" },
+      // X-Ray Active Tracing is intentionally OFF: with ADOT Application Signals
+      // enabled, the Lambda runtime would emit a second pair of segments
+      // (AWS::Lambda + AWS::Lambda::Function) that show up as duplicate nodes
+      // in the X-Ray service map alongside ADOT's own span. AppSignals docs:
+      // "You don't need to enable X-Ray active tracing on the Lambda function."
+      tracingConfig: { mode: "PassThrough" },
       environment: {
         variables: {
           AWS_LAMBDA_EXEC_WRAPPER: "/opt/otel-instrument",

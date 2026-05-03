@@ -222,13 +222,15 @@ function appSignalsLink(
   servicePy: string,
 ) {
   const md = [
-    "### Application Signals",
+    "### Service map",
     "",
-    `- [Service map](https://${region}.console.aws.amazon.com/cloudwatch/home?region=${region}#application-signals/services)`,
+    "**Use the Application Signals service map for the canonical one-node-per-service view.** The X-Ray Trace Map is the lower-level view: each Lambda invocation produces multiple X-Ray segment types (`AWS::Lambda`, `AWS::Lambda::Function`, plus ADOT's untyped service span), so a single Lambda renders as several adjacent nodes there — that's by design and the AWS docs explicitly direct you at AppSignals for the consolidated view.",
+    "",
+    `- **[Application Signals service map](https://${region}.console.aws.amazon.com/cloudwatch/home?region=${region}#application-signals/services)** — one node per runtime`,
     `- [SLOs](https://${region}.console.aws.amazon.com/cloudwatch/home?region=${region}#application-signals/slos)`,
-    `- [\`${serviceTs}\` service](https://${region}.console.aws.amazon.com/cloudwatch/home?region=${region}#application-signals/services/${encodeURIComponent(serviceTs)})`,
-    `- [\`${servicePy}\` service](https://${region}.console.aws.amazon.com/cloudwatch/home?region=${region}#application-signals/services/${encodeURIComponent(servicePy)})`,
-    `- [X-Ray Trace Map](https://${region}.console.aws.amazon.com/cloudwatch/home?region=${region}#xray:service-map/map)`,
+    `- [\`${serviceTs}\` service detail](https://${region}.console.aws.amazon.com/cloudwatch/home?region=${region}#application-signals/services/${encodeURIComponent(serviceTs)})`,
+    `- [\`${servicePy}\` service detail](https://${region}.console.aws.amazon.com/cloudwatch/home?region=${region}#application-signals/services/${encodeURIComponent(servicePy)})`,
+    `- [X-Ray Trace Map (deep-dive)](https://${region}.console.aws.amazon.com/cloudwatch/home?region=${region}#xray:service-map/map)`,
   ].join("\n");
   return header(x, y, w, h, md);
 }

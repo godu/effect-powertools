@@ -48,7 +48,8 @@ After ~5 min in the AWS console (eu-west-3):
 
 - **Application Signals → Services**: `cloudwatch-observability-demo-ts` and `cloudwatch-observability-demo-py`.
 - **Application Signals → SLOs**: 4 SLOs healthy.
-- **CloudWatch → X-Ray → Trace Map**: SQS → Lambda → S3 for both runtimes.
+- **CloudWatch → Application Signals → Services**: one node per runtime, with edges to S3. Canonical "one-node-per-lambda" view.
+- **CloudWatch → X-Ray → Trace Map**: deeper view; each Lambda invocation produces multiple segment types (`AWS::Lambda`, `AWS::Lambda::Function`, untyped ADOT span), so a single Lambda renders as several adjacent nodes here. That's by design — AWS docs direct you at AppSignals for the consolidated map.
 - **CloudWatch → Application Insights**: stack monitored, status green.
 - **CloudWatch → Lambda Insights**: enhanced metrics for both functions.
 - **CloudWatch → Dashboards**: `cloudwatch-observability-demo-dev`.

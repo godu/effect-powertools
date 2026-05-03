@@ -105,5 +105,7 @@ export const pyDlqUrl = queues.py.dlq.url;
 export const tsLambdaName = tsLambda.name;
 export const pyLambdaName = pyLambda.name;
 export const dashboardUrl = pulumi.interpolate`https://eu-west-3.console.aws.amazon.com/cloudwatch/home?region=eu-west-3#dashboards:name=${dashboard.dashboardName}`;
+// Application Signals service map renders one node per Lambda. This is the
+// canonical view; X-Ray Trace Map shows multi-segment Lambda nodes by design.
+export const serviceMapUrl = `https://eu-west-3.console.aws.amazon.com/cloudwatch/home?region=eu-west-3#application-signals/services`;
 export const traceMapUrl = `https://eu-west-3.console.aws.amazon.com/cloudwatch/home?region=eu-west-3#xray:service-map/map`;
-export const appSignalsUrl = `https://eu-west-3.console.aws.amazon.com/cloudwatch/home?region=eu-west-3#application-signals/services`;
