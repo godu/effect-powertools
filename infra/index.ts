@@ -24,7 +24,7 @@ const tags = {
 const dataBucket = createDataBucket({ namePrefix, tags });
 const queue = createQueue({ namePrefix, tags });
 
-const { producer, consumer } = createLambdas({
+const { producer, consumer, observer } = createLambdas({
   namePrefix,
   queue: queue.main,
   dataBucket,
@@ -41,6 +41,7 @@ createSlos(
     namePrefix,
     producerName: producer.name,
     consumerName: consumer.name,
+    observerName: observer.name,
     tags,
   },
   discovery,
@@ -55,6 +56,7 @@ createAlarms({
   namePrefix,
   producer,
   consumer,
+  observer,
   dlq: queue.dlq,
   tags,
 });
@@ -63,6 +65,7 @@ const dashboard = createDashboard({
   region: REGION,
   producer,
   consumer,
+  observer,
   mainQueue: queue.main,
   dlq: queue.dlq,
   dataBucket,
@@ -74,5 +77,6 @@ export const queueUrl = queue.main.url;
 export const dlqUrl = queue.dlq.url;
 export const producerName = producer.name;
 export const consumerName = consumer.name;
+export const observerName = observer.name;
 export const dashboardUrl = pulumi.interpolate`https://${REGION}.console.aws.amazon.com/cloudwatch/home?region=${REGION}#dashboards:name=${dashboard.dashboardName}`;
 export const traceMapUrl = `https://${REGION}.console.aws.amazon.com/cloudwatch/home?region=${REGION}#xray:service-map/map`;
