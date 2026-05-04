@@ -103,14 +103,20 @@ type XRayHttp = {
   response?: { status?: number; content_length?: number };
 };
 
+// Tagging the Lambda parent segment from user code is a no-op: AWS Lambda
+// installs a "facade segment" (aws-xray-sdk-core/lib/env/aws_lambda.js) that
+// is never emitted to the daemon, so we only tag the subsegment we create.
+// Lambda Function URL invocations don't auto-populate http.request on the
+// service-managed parent either, which is why traces show no URL in the
+// X-Ray trace list.
 const setHttpRequest = (
-  segment: Segment | Subsegment,
+  sub: Subsegment,
   request: Request,
   pathname: string,
 ): void => {
   const search = new URL(request.url).search;
   const xff = request.headers.get("x-forwarded-for");
-  const target = segment as unknown as { http?: XRayHttp };
+  const target = sub as unknown as { http?: XRayHttp };
   target.http = {
     ...target.http,
     request: {
@@ -124,11 +130,11 @@ const setHttpRequest = (
 };
 
 const setHttpResponseStatus = (
-  segment: Segment | Subsegment,
+  sub: Subsegment,
   status: number,
   contentLength: number | undefined,
 ): void => {
-  const target = segment as unknown as { http?: XRayHttp };
+  const target = sub as unknown as { http?: XRayHttp };
   target.http = {
     ...target.http,
     response: {
@@ -229,7 +235,6 @@ export const observabilityServerFn = (opts: ObservabilityOptions = {}) =>
         let sub: Subsegment | undefined;
         if (tracingEnabled) {
           parent = ptTracer.getSegment();
-          if (parent) setHttpRequest(parent, request, pathname);
           sub = parent?.addNewSubsegment(`## ${name}`);
           if (sub) {
             ptTracer.setSegment(sub);
@@ -277,13 +282,12 @@ export const observabilityServerFn = (opts: ObservabilityOptions = {}) =>
           const ptMetrics = yield* PowertoolsMetricsService;
 
           if (Exit.isSuccess(exit)) {
-            const status = exit.value.response.status;
-            const contentLength = parseContentLength(exit.value.response);
-            if (setup.parent) {
-              setHttpResponseStatus(setup.parent, status, contentLength);
-            }
             if (setup.sub) {
-              setHttpResponseStatus(setup.sub, status, contentLength);
+              setHttpResponseStatus(
+                setup.sub,
+                exit.value.response.status,
+                parseContentLength(exit.value.response),
+              );
             }
             if (setup.tracingEnabled) {
               ptTracer.addResponseAsMetadata(
@@ -295,7 +299,6 @@ export const observabilityServerFn = (opts: ObservabilityOptions = {}) =>
               );
             }
           } else {
-            if (setup.parent) setHttpResponseStatus(setup.parent, 500, undefined);
             if (setup.sub) setHttpResponseStatus(setup.sub, 500, undefined);
             if (setup.tracingEnabled) {
               const failure = Cause.failureOption(exit.cause);
