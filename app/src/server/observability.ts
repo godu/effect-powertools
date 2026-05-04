@@ -17,6 +17,8 @@ export const runtime = ManagedRuntime.make(
   PowertoolsLayer({ logger: ptLogger, tracer: ptTracer, metrics: ptMetrics }),
 );
 
+export type Runtime = typeof runtime;
+
 if (typeof process !== "undefined" && typeof process.on === "function") {
   process.on("SIGTERM", () => {
     void runtime.dispose();

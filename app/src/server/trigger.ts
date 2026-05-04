@@ -1,9 +1,5 @@
 import { MetricUnit } from "@aws-lambda-powertools/metrics";
-import {
-  InvokeCommand,
-  type InvokeCommandOutput,
-  LambdaClient,
-} from "@aws-sdk/client-lambda";
+import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import * as Effect from "effect/Effect";
 import * as Metric from "effect/Metric";
 
@@ -14,15 +10,16 @@ import {
   histogram,
   timed,
 } from "../../../lambdas/shared/effect-powertools";
-import { ptMetrics, runtime } from "./observability";
 
 const PRODUCER_FUNCTION_NAME = process.env.PRODUCER_FUNCTION_NAME;
 if (!PRODUCER_FUNCTION_NAME) {
   throw new Error("PRODUCER_FUNCTION_NAME env var is required");
 }
 
-// captureHTTPsRequests is patched in observability.ts; the SDK client's
-// outbound HTTPS calls become X-Ray subsegments automatically.
+// captureHTTPsRequests is set on the Tracer in observability.ts and applies
+// globally; the SDK client's outbound HTTPS calls become X-Ray subsegments
+// automatically — chained under whatever segment the observability
+// middleware has set as active.
 const lambda = new LambdaClient({});
 
 const triggersReceived = counter("TriggersReceived", { unit: MetricUnit.Count });
@@ -82,28 +79,23 @@ const isThrottling = (error: unknown): boolean => {
   return name !== undefined && THROTTLING_ERROR_NAMES.has(name);
 };
 
-const invokeProducer = Effect.async<InvokeCommandOutput, InvokeError>(
-  (resume) => {
-    lambda
-      .send(
-        new InvokeCommand({
-          FunctionName: PRODUCER_FUNCTION_NAME,
-          InvocationType: "RequestResponse",
-          Payload: new TextEncoder().encode(
-            JSON.stringify({ source: "trigger" }),
-          ),
-        }),
-      )
-      .then((output) => resume(Effect.succeed(output)))
-      .catch((error: unknown) => {
-        if (isThrottling(error)) {
-          resume(Effect.fail(new InvokeError({ cause: String(error) })));
-        } else {
-          resume(Effect.die(error));
-        }
-      });
-  },
+const invokeProducer = Effect.tryPromise(() =>
+  lambda.send(
+    new InvokeCommand({
+      FunctionName: PRODUCER_FUNCTION_NAME,
+      InvocationType: "RequestResponse",
+      Payload: new TextEncoder().encode(
+        JSON.stringify({ source: "trigger" }),
+      ),
+    }),
+  ),
 ).pipe(
+  Effect.catchAll((unknownEx) => {
+    const err = (unknownEx as { error?: unknown }).error ?? unknownEx;
+    return isThrottling(err)
+      ? Effect.fail(new InvokeError({ cause: String(err) }))
+      : Effect.die(err);
+  }),
   Effect.withSpan("lambda.invoke", {
     attributes: {
       "rpc.system": "aws-api",
@@ -115,101 +107,85 @@ const invokeProducer = Effect.async<InvokeCommandOutput, InvokeError>(
   Metric.trackDuration(triggerLatency),
 );
 
-const triggerProgram = timed(
-  "TriggerProcess",
-  Effect.gen(function* () {
-    yield* Effect.logDebug("trigger_request_received");
-
-    const result = yield* invokeProducer;
-
-    if (result.FunctionError) {
-      yield* Effect.logFatal("producer_function_error").pipe(
-        Effect.annotateLogs({
-          functionError: result.FunctionError,
-          statusCode: result.StatusCode,
-        }),
-      );
-      return yield* Effect.fail(
-        new FunctionError({
-          statusCode: result.StatusCode,
-          cause: result.FunctionError,
-        }),
-      );
-    }
-
-    if (!result.Payload) {
-      yield* Effect.logError("producer_empty_payload");
-      return yield* Effect.fail(
-        new InvokeError({ cause: "empty payload from producer" }),
-      );
-    }
-
-    const payloadText = new TextDecoder().decode(result.Payload);
-    yield* Metric.update(responseSize, payloadText.length);
-
-    const parsed = yield* Effect.try({
-      try: () => JSON.parse(payloadText) as ProducerResponse,
-      catch: (error) =>
-        new InvokeError({ cause: `parse failed: ${String(error)}` }),
-    });
-
-    const shape = classifyShape(parsed.amountCents);
-
-    yield* Effect.annotateCurrentSpan("orderId", parsed.orderId);
-    yield* Effect.annotateCurrentSpan("orderShape", shape);
-
-    yield* Metric.update(orderShapeFreq, shape);
-    yield* Metric.update(
-      Metric.tagged(triggersReceived, "orderShape", shape),
-      1,
-    );
-
-    if (shape === "high") {
-      yield* Effect.logWarning("high_amount_triggered").pipe(
-        Effect.annotateLogs({
-          orderId: parsed.orderId,
-          amountCents: parsed.amountCents,
-        }),
-      );
-    }
-
-    yield* Effect.logInfo("trigger_completed").pipe(
-      Effect.annotateLogs({ orderId: parsed.orderId, orderShape: shape }),
-    );
-
-    return parsed;
-  }),
-).pipe(
-  Effect.withSpan("trigger.handler"),
-  Effect.tapError((error) =>
-    Effect.logError("trigger_failed").pipe(
-      Effect.annotateLogs({ error: String(error) }),
-    ),
-  ),
-);
-
 const sampleMemory = Effect.sync(() => process.memoryUsage().rss).pipe(
   Effect.flatMap((bytes) => Metric.update(memoryUsedBytes, bytes)),
 );
 
-export interface TriggerOutcome {
-  readonly status: number;
-  readonly body: ProducerResponse | { error: string };
-}
+export const triggerProgram: Effect.Effect<
+  ProducerResponse,
+  InvokeError | FunctionError
+> = sampleMemory.pipe(
+  Effect.flatMap(() =>
+    timed(
+      "TriggerProcess",
+      Effect.gen(function* () {
+        yield* Effect.logDebug("trigger_request_received");
 
-export const handleTrigger = async (): Promise<TriggerOutcome> => {
-  ptMetrics.captureColdStartMetric();
-  ptMetrics.addDimension("environment", process.env.STAGE ?? "dev");
+        const result = yield* invokeProducer;
 
-  await runtime.runPromise(sampleMemory);
+        if (result.FunctionError) {
+          yield* Effect.logFatal("producer_function_error").pipe(
+            Effect.annotateLogs({
+              functionError: result.FunctionError,
+              statusCode: result.StatusCode,
+            }),
+          );
+          return yield* Effect.fail(
+            new FunctionError({
+              statusCode: result.StatusCode,
+              cause: result.FunctionError,
+            }),
+          );
+        }
 
-  try {
-    const exit = await runtime.runPromiseExit(triggerProgram);
-    if (exit._tag === "Failure") {
-      return { status: 502, body: { error: "trigger_failed" } };
-    }
-    return { status: 200, body: exit.value };
-  } finally {
-    ptMetrics.publishStoredMetrics();
-  }
-};
+        if (!result.Payload) {
+          yield* Effect.logError("producer_empty_payload");
+          return yield* Effect.fail(
+            new InvokeError({ cause: "empty payload from producer" }),
+          );
+        }
+
+        const payloadText = new TextDecoder().decode(result.Payload);
+        yield* Metric.update(responseSize, payloadText.length);
+
+        const parsed = yield* Effect.try({
+          try: () => JSON.parse(payloadText) as ProducerResponse,
+          catch: (error) =>
+            new InvokeError({ cause: `parse failed: ${String(error)}` }),
+        });
+
+        const shape = classifyShape(parsed.amountCents);
+
+        yield* Effect.annotateCurrentSpan("orderId", parsed.orderId);
+        yield* Effect.annotateCurrentSpan("orderShape", shape);
+
+        yield* Metric.update(orderShapeFreq, shape);
+        yield* Metric.update(
+          Metric.tagged(triggersReceived, "orderShape", shape),
+          1,
+        );
+
+        if (shape === "high") {
+          yield* Effect.logWarning("high_amount_triggered").pipe(
+            Effect.annotateLogs({
+              orderId: parsed.orderId,
+              amountCents: parsed.amountCents,
+            }),
+          );
+        }
+
+        yield* Effect.logInfo("trigger_completed").pipe(
+          Effect.annotateLogs({ orderId: parsed.orderId, orderShape: shape }),
+        );
+
+        return parsed;
+      }),
+    ),
+  ),
+  Effect.withSpan("trigger.handler"),
+  Effect.tapErrorCause((cause) =>
+    Effect.logError("trigger_failed").pipe(
+      Effect.annotateLogs({ cause: String(cause) }),
+    ),
+  ),
+);
