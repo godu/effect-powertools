@@ -1,5 +1,11 @@
 // =============================================================================
-// TanStack Start middlewares for the Effect ↔ Powertools bridge.
+// TanStack Start server-fn bodies for the Effect ↔ Powertools bridge.
+//
+// This module exports the inner `async ({ next, request, pathname, context })`
+// handler bodies that consumers plug into `createMiddleware().server(...)` at
+// the call site. The middleware-chain wiring (createMiddleware, .middleware,
+// .server) lives in the consumer so TanStack Start's type inference runs
+// end-to-end at the wiring point.
 //
 // Concurrency caveat: the Powertools tracer's segment context is process-
 // global (cls-hooked / aws-xray-sdk-core). Lambda's one-request-per-container
@@ -12,7 +18,7 @@
 import "@tanstack/react-start/server-only";
 
 import type { Segment, Subsegment } from "aws-xray-sdk-core";
-import { createMiddleware } from "@tanstack/react-start";
+import type { RequestServerOptions } from "@tanstack/react-start";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -25,14 +31,14 @@ import { PowertoolsMetricsService } from "./metrics";
 import { PowertoolsTracerService, stripXrayTraceIdPrefix } from "./tracer";
 
 // =============================================================================
-// runtimeMiddleware — build a ManagedRuntime once and inject into ctx.context
+// runtimeServerFn — build a ManagedRuntime once and inject into ctx.context.
 // =============================================================================
 
 // Tracks runtimes whose SIGTERM disposer we've already registered, so calling
-// `runtimeMiddleware()` more than once doesn't leak listeners.
+// `runtimeServerFn()` more than once doesn't leak listeners.
 const registeredDisposers = new WeakSet<ManagedRuntime.ManagedRuntime<unknown, unknown>>();
 
-export const runtimeMiddleware = <A, E>(layer: Layer.Layer<A, E>) => {
+export const runtimeServerFn = <A, E>(layer: Layer.Layer<A, E>) => {
   const runtime = ManagedRuntime.make(layer);
   if (
     !registeredDisposers.has(
@@ -48,21 +54,12 @@ export const runtimeMiddleware = <A, E>(layer: Layer.Layer<A, E>) => {
       void runtime.dispose();
     });
   }
-  return createMiddleware().server<{
-    runtime: ManagedRuntime.ManagedRuntime<A, E>;
-  }>(async ({ next }) => next({ context: { runtime } }));
+  return async <TR, TM>(options: RequestServerOptions<TR, TM>) =>
+    options.next({ context: { runtime } });
 };
 
-// Helper for routes: read `runtime` out of ctx.context with a single,
-// well-commented cast. The TanStack Start types don't yet propagate global-
-// middleware context to route handlers, so this stays as the choke point.
-export const requireRuntime = <R = never, E = never>(ctx: {
-  context: unknown;
-}): ManagedRuntime.ManagedRuntime<R, E> =>
-  (ctx.context as { runtime: ManagedRuntime.ManagedRuntime<R, E> }).runtime;
-
 // =============================================================================
-// observabilityMiddleware — captureLambdaHandler port + X-Ray http block
+// observabilityServerFn — captureLambdaHandler port + X-Ray http block
 //
 // Faithful port of Powertools middy `captureLambdaHandler`
 // (packages/tracer/src/middleware/middy.ts) plus the X-Ray segment-document
@@ -196,137 +193,142 @@ class NextError {
   constructor(readonly error: unknown) {}
 }
 
-type ObservabilityRuntime = ManagedRuntime.ManagedRuntime<
-  PowertoolsTracerService | PowertoolsMetricsService,
-  never
->;
+// `ManagedRuntime` is contravariant in `R` (effect/ManagedRuntime.d.ts:46 —
+// `interface ManagedRuntime<in R, out ER>`), so any runtime providing at least
+// `Tracer | Metrics` (e.g. `Logger | Tracer | Metrics`) is assignable here.
+export const observabilityServerFn = (opts: ObservabilityOptions = {}) =>
+  async <TR, TM>(
+    options: RequestServerOptions<TR, TM> & {
+      context: {
+        runtime: ManagedRuntime.ManagedRuntime<
+          PowertoolsTracerService | PowertoolsMetricsService,
+          unknown
+        >;
+      };
+    },
+  ) => {
+    const { next, request, pathname, context } = options;
+    const runtime = context.runtime;
 
-export const observabilityMiddleware = (opts: ObservabilityOptions = {}) =>
-  createMiddleware().server(
-    async ({ next, request, pathname, context }) => {
-      const runtime = (
-        context as unknown as { runtime: ObservabilityRuntime }
-      ).runtime;
+    const name =
+      opts.resolveSpanName?.(request, pathname) ??
+      opts.serviceName ??
+      `${request.method} ${pathname}`;
 
-      const name =
-        opts.resolveSpanName?.(request, pathname) ??
-        opts.serviceName ??
-        `${request.method} ${pathname}`;
+    // Capture-once for use as the call site's typed-result.
+    type NextResult = Awaited<ReturnType<typeof next>>;
 
-      // Capture-once for use as the call site's typed-result.
-      type NextResult = Awaited<ReturnType<typeof next>>;
+    const program = Effect.acquireUseRelease(
+      // ---------- acquire ----------
+      Effect.gen(function* () {
+        const ptTracer = yield* PowertoolsTracerService;
+        const ptMetrics = yield* PowertoolsMetricsService;
 
-      const program = Effect.acquireUseRelease(
-        // ---------- acquire ----------
+        const tracingEnabled = ptTracer.isTracingEnabled();
+        let parent: Segment | Subsegment | undefined;
+        let sub: Subsegment | undefined;
+        if (tracingEnabled) {
+          parent = ptTracer.getSegment();
+          sub = parent?.addNewSubsegment(`## ${name}`);
+          if (sub) {
+            ptTracer.setSegment(sub);
+            setHttpRequest(sub, request, pathname);
+          }
+          ptTracer.annotateColdStart();
+          ptTracer.addServiceNameAnnotation();
+        }
+        yield* ptMetrics.captureColdStart();
+        yield* ptMetrics.addDimension(
+          "environment",
+          process.env.STAGE ?? "dev",
+        );
+        return { tracingEnabled, parent, sub } as SetupResult;
+      }),
+      // ---------- use ----------
+      (setup) =>
+        Effect.gen(function* () {
+          // Build ExternalSpan from the live subsegment so route-side
+          // Effect spans declare the Lambda subsegment as their parent.
+          const externalSpan: Tracer.AnySpan | undefined = setup.sub
+            ? Tracer.externalSpan({
+                spanId: setup.sub.id,
+                traceId: stripXrayTraceIdPrefix(
+                  setup.sub.segment?.trace_id,
+                ),
+                sampled: true,
+              })
+            : undefined;
+          const exposedRuntime = externalSpan
+            ? wrapRuntimeWithParentSpan(runtime, externalSpan)
+            : runtime;
+          return yield* Effect.tryPromise({
+            try: () =>
+              next({
+                context: { runtime: exposedRuntime },
+              }) as Promise<NextResult>,
+            catch: (e) => new NextError(e),
+          });
+        }),
+      // ---------- release (always) ----------
+      (setup, exit) =>
         Effect.gen(function* () {
           const ptTracer = yield* PowertoolsTracerService;
           const ptMetrics = yield* PowertoolsMetricsService;
 
-          const tracingEnabled = ptTracer.isTracingEnabled();
-          let parent: Segment | Subsegment | undefined;
-          let sub: Subsegment | undefined;
-          if (tracingEnabled) {
-            parent = ptTracer.getSegment();
-            sub = parent?.addNewSubsegment(`## ${name}`);
-            if (sub) {
-              ptTracer.setSegment(sub);
-              setHttpRequest(sub, request, pathname);
-            }
-            ptTracer.annotateColdStart();
-            ptTracer.addServiceNameAnnotation();
-          }
-          yield* ptMetrics.captureColdStart();
-          yield* ptMetrics.addDimension(
-            "environment",
-            process.env.STAGE ?? "dev",
-          );
-          return { tracingEnabled, parent, sub } as SetupResult;
-        }),
-        // ---------- use ----------
-        (setup) =>
-          Effect.gen(function* () {
-            // Build ExternalSpan from the live subsegment so route-side
-            // Effect spans declare the Lambda subsegment as their parent.
-            const externalSpan: Tracer.AnySpan | undefined = setup.sub
-              ? Tracer.externalSpan({
-                  spanId: setup.sub.id,
-                  traceId: stripXrayTraceIdPrefix(
-                    setup.sub.segment?.trace_id,
-                  ),
-                  sampled: true,
-                })
-              : undefined;
-            const exposedRuntime = externalSpan
-              ? wrapRuntimeWithParentSpan(runtime, externalSpan)
-              : runtime;
-            return yield* Effect.tryPromise({
-              try: () =>
-                next({
-                  context: { runtime: exposedRuntime },
-                }) as Promise<NextResult>,
-              catch: (e) => new NextError(e),
-            });
-          }),
-        // ---------- release (always) ----------
-        (setup, exit) =>
-          Effect.gen(function* () {
-            const ptTracer = yield* PowertoolsTracerService;
-            const ptMetrics = yield* PowertoolsMetricsService;
-
-            if (Exit.isSuccess(exit)) {
-              if (setup.sub) {
-                setHttpResponseStatus(
-                  setup.sub,
-                  exit.value.response.status,
-                  parseContentLength(exit.value.response),
-                );
-              }
-              if (setup.tracingEnabled) {
-                ptTracer.addResponseAsMetadata(
-                  {
-                    status: exit.value.response.status,
-                    statusText: exit.value.response.statusText,
-                  },
-                  name,
-                );
-              }
-            } else {
-              if (setup.sub) setHttpResponseStatus(setup.sub, 500, undefined);
-              if (setup.tracingEnabled) {
-                const failure = Cause.failureOption(exit.cause);
-                const err =
-                  Option.isSome(failure) && failure.value instanceof NextError
-                    ? failure.value.error
-                    : Cause.squash(exit.cause);
-                ptTracer.addErrorAsMetadata(
-                  err instanceof Error ? err : new Error(String(err)),
-                );
-              }
-            }
-
+          if (Exit.isSuccess(exit)) {
             if (setup.sub) {
-              try {
-                setup.sub.close();
-              } catch {
-                /* already closed */
-              }
+              setHttpResponseStatus(
+                setup.sub,
+                exit.value.response.status,
+                parseContentLength(exit.value.response),
+              );
             }
-            if (setup.parent) ptTracer.setSegment(setup.parent);
-            yield* ptMetrics.flush();
-          }),
-      );
+            if (setup.tracingEnabled) {
+              ptTracer.addResponseAsMetadata(
+                {
+                  status: exit.value.response.status,
+                  statusText: exit.value.response.statusText,
+                },
+                name,
+              );
+            }
+          } else {
+            if (setup.sub) setHttpResponseStatus(setup.sub, 500, undefined);
+            if (setup.tracingEnabled) {
+              const failure = Cause.failureOption(exit.cause);
+              const err =
+                Option.isSome(failure) && failure.value instanceof NextError
+                  ? failure.value.error
+                  : Cause.squash(exit.cause);
+              ptTracer.addErrorAsMetadata(
+                err instanceof Error ? err : new Error(String(err)),
+              );
+            }
+          }
 
-      const exit = await runtime.runPromiseExit(program);
-      if (Exit.isFailure(exit)) {
-        // Re-raise the original `throw` from `next()` so TanStack Start sees
-        // it verbatim. Anything else (defect inside acquire/release) becomes
-        // an Error built from Cause.pretty.
-        const failure = Cause.failureOption(exit.cause);
-        if (Option.isSome(failure) && failure.value instanceof NextError) {
-          throw failure.value.error;
-        }
-        throw new Error(Cause.pretty(exit.cause));
+          if (setup.sub) {
+            try {
+              setup.sub.close();
+            } catch {
+              /* already closed */
+            }
+          }
+          if (setup.parent) ptTracer.setSegment(setup.parent);
+          yield* ptMetrics.flush();
+        }),
+    );
+
+    const exit = await runtime.runPromiseExit(program);
+    if (Exit.isFailure(exit)) {
+      // Re-raise the original `throw` from `next()` so TanStack Start sees
+      // it verbatim. Anything else (defect inside acquire/release) becomes
+      // an Error built from Cause.pretty.
+      const failure = Cause.failureOption(exit.cause);
+      if (Option.isSome(failure) && failure.value instanceof NextError) {
+        throw failure.value.error;
       }
-      return exit.value;
-    },
-  );
+      throw new Error(Cause.pretty(exit.cause));
+    }
+    return exit.value;
+  };
+

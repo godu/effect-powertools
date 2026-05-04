@@ -1,20 +1,36 @@
-import { createServerOnlyFn, createStart } from "@tanstack/react-start";
+import {
+  createMiddleware,
+  createServerOnlyFn,
+  createStart,
+} from "@tanstack/react-start";
 
 import {
-  observabilityMiddleware,
-  runtimeMiddleware,
+  observabilityServerFn,
+  runtimeServerFn,
 } from "effect-powertools/tanstack-start";
 import { observabilityLayer } from "./server/layer.server";
 
-// `createServerOnlyFn` makes the wrapped body server-only — its imports
-// (effect-powertools/tanstack-start, ./server/layer.server) are stripped
-// from the client bundle by TanStack Start's plugin. The function body is
-// only ever evaluated server-side; client gets a stub.
-const buildRequestMiddlewares = createServerOnlyFn(() => [
-  runtimeMiddleware(observabilityLayer),
-  observabilityMiddleware({ serviceName: "/api/trigger" }),
-]);
+// `createServerOnlyFn` lets the build plugin strip these imports from the
+// client bundle. The wrapper itself becomes a stub that THROWS on the client
+// (start-plugin-core/src/start-compiler/handleEnvOnly.ts), so we must not
+// invoke it during client-side getOptions(). `import.meta.env.SSR` is a Vite
+// build-time constant — the false branch is tree-shaken from the client.
+const buildRequestMiddlewares = createServerOnlyFn(() => {
+  const runtimeMw = createMiddleware().server(
+    runtimeServerFn(observabilityLayer),
+  );
+  const observabilityMw = createMiddleware()
+    .middleware([runtimeMw])
+    .server(observabilityServerFn({ serviceName: "/api/trigger" }));
+  return [runtimeMw, observabilityMw] as const;
+});
 
-export const startInstance = createStart(() => ({
-  requestMiddleware: buildRequestMiddlewares(),
-}));
+type StartOptions = {
+  requestMiddleware: ReturnType<typeof buildRequestMiddlewares>;
+};
+
+export const startInstance = createStart(
+  (): StartOptions => ({
+    requestMiddleware: buildRequestMiddlewares(),
+  }),
+);

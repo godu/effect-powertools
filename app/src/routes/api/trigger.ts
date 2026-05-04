@@ -1,15 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
 import * as Cause from "effect/Cause";
 
-import { requireRuntime } from "effect-powertools/tanstack-start";
 import { triggerProgram } from "../../server/trigger.server";
 
 export const Route = createFileRoute("/api/trigger")({
   server: {
     handlers: {
       POST: async (ctx) => {
-        const runtime = requireRuntime(ctx);
-        const exit = await runtime.runPromiseExit(triggerProgram);
+        const exit = await ctx.context.runtime.runPromiseExit(triggerProgram);
         if (exit._tag === "Failure") {
           return new Response(
             JSON.stringify({
