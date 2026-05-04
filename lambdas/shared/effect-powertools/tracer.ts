@@ -1,8 +1,7 @@
 import type { Tracer as PowertoolsTracer } from "@aws-lambda-powertools/tracer";
 import type { Segment, Subsegment } from "aws-xray-sdk-core";
-import { randomBytes } from "node:crypto";
 import * as Cause from "effect/Cause";
-import type * as Context from "effect/Context";
+import * as Context from "effect/Context";
 import * as Inspectable from "effect/Inspectable";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -70,10 +69,15 @@ const setAttributeOnSubsegment = (
   sub.addAnnotation(key, Inspectable.toStringUnknown(value));
 };
 
-const randomHex = (len: number): string =>
-  randomBytes(Math.ceil(len / 2))
-    .toString("hex")
-    .slice(0, len);
+// Web Crypto API — works in both Node 20+ and browsers, no node:crypto
+// dependency that breaks Vite's client build.
+const randomHex = (len: number): string => {
+  const bytes = new Uint8Array(Math.ceil(len / 2));
+  globalThis.crypto.getRandomValues(bytes);
+  let out = "";
+  for (const b of bytes) out += b.toString(16).padStart(2, "0");
+  return out.slice(0, len);
+};
 
 const resolveParentForSubsegment = (
   ptTracer: PowertoolsTracer,
@@ -245,6 +249,22 @@ export const makePowertoolsTracer = (
     },
   });
 
+// Service tag for the raw Powertools Tracer instance — lets downstream
+// Effect programs interact with the X-Ray SDK directly (e.g., a TanStack
+// Start observability middleware reading the active segment).
+export class PowertoolsTracerService extends Context.Tag(
+  "@app/PowertoolsTracerService",
+)<PowertoolsTracerService, PowertoolsTracer>() {}
+
 export const PowertoolsTracerLayer = (
   options: PowertoolsTracerOptions,
-): Layer.Layer<never> => Layer.setTracer(makePowertoolsTracer(options));
+): Layer.Layer<PowertoolsTracerService> =>
+  Layer.merge(
+    Layer.setTracer(makePowertoolsTracer(options)),
+    Layer.succeed(PowertoolsTracerService, options.tracer),
+  );
+
+// Strips X-Ray's "1-" prefix and dashes from a trace id so it lines up with
+// OpenTelemetry-compatible 32-hex format. Exported for callers that need to
+// build an Effect `ExternalSpan` from an X-Ray subsegment.
+export const stripXrayTraceIdPrefix = stripTraceIdPrefix;

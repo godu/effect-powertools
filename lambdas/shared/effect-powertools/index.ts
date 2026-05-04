@@ -3,12 +3,12 @@ import type { Metrics as PowertoolsMetrics } from "@aws-lambda-powertools/metric
 import type { Tracer as PowertoolsTracer } from "@aws-lambda-powertools/tracer";
 import * as Layer from "effect/Layer";
 
-import { PowertoolsLoggerLayer } from "./logger";
+import { PowertoolsLoggerLayer, PowertoolsLoggerService } from "./logger";
 import {
   PowertoolsMetricsLayer,
   PowertoolsMetricsService,
 } from "./metrics";
-import { PowertoolsTracerLayer } from "./tracer";
+import { PowertoolsTracerLayer, PowertoolsTracerService } from "./tracer";
 
 export interface PowertoolsBridgeOptions {
   readonly logger: PowertoolsLogger;
@@ -18,7 +18,9 @@ export interface PowertoolsBridgeOptions {
 
 export const PowertoolsLayer = (
   options: PowertoolsBridgeOptions,
-): Layer.Layer<PowertoolsMetricsService> =>
+): Layer.Layer<
+  PowertoolsLoggerService | PowertoolsTracerService | PowertoolsMetricsService
+> =>
   Layer.mergeAll(
     PowertoolsLoggerLayer({ logger: options.logger }),
     PowertoolsTracerLayer({ tracer: options.tracer }),
@@ -27,10 +29,14 @@ export const PowertoolsLayer = (
 
 export {
   PowertoolsLoggerLayer,
+  PowertoolsLoggerService,
   PowertoolsTracerLayer,
+  PowertoolsTracerService,
   PowertoolsMetricsLayer,
   PowertoolsMetricsService,
 };
+
+export { stripXrayTraceIdPrefix } from "./tracer";
 
 export {
   counter,

@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import * as Cause from "effect/Cause";
+import type * as ManagedRuntime from "effect/ManagedRuntime";
 
 import { triggerProgram } from "../../server/trigger";
 
@@ -8,7 +9,7 @@ export const Route = createFileRoute("/api/trigger")({
     handlers: {
       POST: async (ctx) => {
         const { runtime } = ctx.context as unknown as {
-          runtime: import("../../server/observability").Runtime;
+          runtime: ManagedRuntime.ManagedRuntime<never, never>;
         };
         const exit = await runtime.runPromiseExit(triggerProgram);
         if (exit._tag === "Failure") {

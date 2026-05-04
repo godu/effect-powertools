@@ -6,11 +6,25 @@
   "description": "Effect ↔ AWS Lambda Powertools bridge — logger, tracer, metrics. Consumed via relative path by sibling Lambda packages.",
   "main": "index.ts",
   "types": "index.ts",
+  "exports": {
+    ".": {
+      "import": "./index.ts",
+      "types": "./index.ts"
+    },
+    "./tanstack-start": {
+      "import": "./tanstack-start.ts",
+      "types": "./tanstack-start.ts"
+    }
+  },
   "peerDependencies": {
     "@aws-lambda-powertools/logger": "^2.10.0",
     "@aws-lambda-powertools/metrics": "^2.10.0",
     "@aws-lambda-powertools/tracer": "^2.10.0",
+    "@tanstack/react-start": ">=1.167.0",
     "aws-xray-sdk-core": "^3.10.0",
     "effect": "3.21.2"
+  },
+  "peerDependenciesMeta": {
+    "@tanstack/react-start": { "optional": true }
   }
 }

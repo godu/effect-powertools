@@ -1,6 +1,7 @@
 import type { Logger as PowertoolsLogger } from "@aws-lambda-powertools/logger";
 import type * as Cause from "effect/Cause";
 import { pretty as causePretty, failureOption as causeFailureOption } from "effect/Cause";
+import * as Context from "effect/Context";
 import * as HashMap from "effect/HashMap";
 import * as List from "effect/List";
 import * as Layer from "effect/Layer";
@@ -111,7 +112,16 @@ export const makePowertoolsLogger = (
   });
 };
 
+// Service tag for the raw Powertools Logger instance — exposed for the
+// observability middleware (e.g., to call `addContext(ctx)` per request).
+export class PowertoolsLoggerService extends Context.Tag(
+  "@app/PowertoolsLoggerService",
+)<PowertoolsLoggerService, PowertoolsLogger>() {}
+
 export const PowertoolsLoggerLayer = (
   options: PowertoolsLoggerOptions,
-): Layer.Layer<never> =>
-  Logger.replace(Logger.defaultLogger, makePowertoolsLogger(options));
+): Layer.Layer<PowertoolsLoggerService> =>
+  Layer.merge(
+    Logger.replace(Logger.defaultLogger, makePowertoolsLogger(options)),
+    Layer.succeed(PowertoolsLoggerService, options.logger),
+  );

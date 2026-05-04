@@ -1,12 +1,15 @@
 import type { Metrics as PowertoolsMetrics } from "@aws-lambda-powertools/metrics";
 import { MetricUnit } from "@aws-lambda-powertools/metrics";
-import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as MetricBoundaries from "effect/MetricBoundaries";
 import type * as MetricKey from "effect/MetricKey";
 import * as MetricKeyType from "effect/MetricKeyType";
+
+import { PowertoolsMetricsService } from "./metrics-service";
+
+export { PowertoolsMetricsService } from "./metrics-service";
 
 /**
  * Bridges Effect's Metric API to AWS Lambda Powertools EMF output.
@@ -231,20 +234,9 @@ export const frequency = (
   );
 
 // ---------------------------------------------------------------------------
-// Effect service tag for the imperative escape hatches
+// Layer wiring (the service tag itself lives in metrics-service.ts so
+// downstream modules can import it without pulling Powertools' MetricUnit).
 // ---------------------------------------------------------------------------
-
-export class PowertoolsMetricsService extends Context.Tag(
-  "@app/PowertoolsMetricsService",
-)<
-  PowertoolsMetricsService,
-  {
-    readonly addDimension: (key: string, value: string) => Effect.Effect<void>;
-    readonly addMetadata: (key: string, value: string) => Effect.Effect<void>;
-    readonly captureColdStart: () => Effect.Effect<void>;
-    readonly flush: () => Effect.Effect<void>;
-  }
->() {}
 
 export interface PowertoolsMetricsOptions {
   readonly metrics: PowertoolsMetrics;
