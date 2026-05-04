@@ -53,7 +53,7 @@ export function createApp(args: AppArgs): AppResult {
     {
       name: fnName,
       role: role.arn,
-      runtime: aws.lambda.Runtime.NodeJS20dX,
+      runtime: aws.lambda.Runtime.NodeJS24dX,
       architectures: ["arm64"],
       handler: "index.handler",
       memorySize: 1024,

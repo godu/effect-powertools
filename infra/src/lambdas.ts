@@ -126,7 +126,7 @@ function createConsumerLambda(args: PipelineLambdaArgs): FnResult {
     {
       name: fnName,
       role: role.arn,
-      runtime: aws.lambda.Runtime.NodeJS20dX,
+      runtime: aws.lambda.Runtime.NodeJS24dX,
       architectures: ["arm64"],
       handler: "handler.handler",
       memorySize: 256,
