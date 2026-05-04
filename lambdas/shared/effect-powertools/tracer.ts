@@ -1,5 +1,5 @@
 import type { Tracer as PowertoolsTracer } from "@aws-lambda-powertools/tracer";
-import type { Segment, Subsegment } from "aws-xray-sdk-core";
+import AWSXRay, { type Segment, type Subsegment } from "aws-xray-sdk-core";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Inspectable from "effect/Inspectable";
@@ -10,15 +10,16 @@ import * as EffectTracer from "effect/Tracer";
 /**
  * Bridges Effect's Tracer to AWS X-Ray subsegments via Powertools.
  *
- * Each Effect span maps to an X-Ray subsegment. On span creation we swap the
- * Powertools `Tracer` global segment to our new subsegment so any
- * `captureAWSv3Client(...)`-instrumented client lands its calls under the
- * right subsegment when invoked from inside `Effect.withSpan(...)`. On span
- * `end` we restore the previously active segment.
- *
- * Caveat: X-Ray's global segment is process-wide. If two Effect fibers spawn
- * via `Effect.fork` and run concurrently in the same Lambda invocation they
- * will race for the global. The demo handler is strictly sequential.
+ * Each Effect span maps to an X-Ray subsegment. The X-Ray "current segment"
+ * is process-wide, but the Tracer's `context` callback fires synchronously
+ * around every Effect step with access to the running fiber. We open a new
+ * cls-hooked namespace context per step, pin the segment to the fiber's
+ * current span inside it, and call `execution()` from within. Async work
+ * spawned by that step (Promises, AWS SDK middleware installed by
+ * `captureAWSv3Client(...)`) inherits the namespace context via
+ * `async_hooks` and resolves the right segment even when sibling fibers
+ * have advanced — so concurrent `Effect.forEach({ concurrency: ... })`
+ * branches keep their AWS SDK leaf subsegments correctly nested.
  */
 
 export type AttributeKind = "annotation" | "metadata" | "skip";
@@ -102,19 +103,6 @@ const makeSpan = (
 
   const parentSegment = resolveParentForSubsegment(ptTracer, parent);
   const subsegment = parentSegment?.addNewSubsegment(name);
-
-  // Snapshot the currently active X-Ray segment, then promote our subsegment
-  // so any captureAWSv3Client middleware sees it. Restored in end().
-  const previousActiveSegment = ptTracer.isTracingEnabled()
-    ? ptTracer.getSegment()
-    : undefined;
-  if (subsegment) {
-    try {
-      ptTracer.setSegment(subsegment);
-    } catch {
-      // setSegment can throw outside Lambda; swallow.
-    }
-  }
 
   const attributes = new Map<string, unknown>();
   if (spanOpts?.attributes) {
@@ -211,13 +199,6 @@ const makeSpan = (
           // already closed
         }
       }
-      if (previousActiveSegment) {
-        try {
-          ptTracer.setSegment(previousActiveSegment);
-        } catch {
-          // ignore
-        }
-      }
     },
   };
 
@@ -226,8 +207,9 @@ const makeSpan = (
 
 export const makePowertoolsTracer = (
   options: PowertoolsTracerOptions,
-): EffectTracer.Tracer =>
-  EffectTracer.make({
+): EffectTracer.Tracer => {
+  const ptTracer = options.tracer;
+  return EffectTracer.make({
     span(name, parent, context, links, startTime, kind, spanOpts) {
       return makeSpan(
         options,
@@ -240,10 +222,30 @@ export const makePowertoolsTracer = (
         spanOpts,
       );
     },
-    context(execution, _fiber) {
-      return execution();
+    // Per-step async-context isolation. Open a fresh cls-hooked child
+    // namespace, pin the X-Ray segment to the fiber's current span, then
+    // run the step. async_hooks propagates the namespace through any
+    // Promise / AWS SDK middleware spawned inside, so concurrent fibers
+    // don't see each other's segment writes.
+    context(execution, fiber) {
+      if (!ptTracer.isTracingEnabled()) return execution();
+      const fiberSpan = fiber.currentSpan;
+      if (!fiberSpan || fiberSpan._tag !== "Span") return execution();
+      const sub = (fiberSpan as BridgeSpan).subsegment;
+      if (!sub) return execution();
+      const ns = AWSXRay.getNamespace();
+      if (!ns) return execution();
+      return ns.runAndReturn(() => {
+        try {
+          ptTracer.setSegment(sub);
+        } catch {
+          // setSegment can throw outside Lambda; swallow and run anyway.
+        }
+        return execution();
+      });
     },
   });
+};
 
 // Service tag for the raw Powertools Tracer instance — lets downstream
 // Effect programs interact with the X-Ray SDK directly (e.g., a TanStack

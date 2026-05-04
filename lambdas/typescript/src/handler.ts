@@ -12,6 +12,7 @@ import type {
   SQSRecord,
 } from "aws-lambda";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Metric from "effect/Metric";
 
@@ -222,17 +223,19 @@ export const handler = async (
 
   await runtime.runPromise(sampleMemory);
 
-  const batchItemFailures: { itemIdentifier: string }[] = [];
   try {
-    for (const record of event.Records) {
-      const result = await runtime.runPromiseExit(writeOne(record));
-      if (result._tag === "Failure") {
-        batchItemFailures.push({ itemIdentifier: record.messageId });
-      }
-    }
+    const exits = await runtime.runPromise(
+      Effect.forEach(event.Records, (record) => Effect.exit(writeOne(record)), {
+        concurrency: "unbounded",
+      }),
+    );
+    const batchItemFailures = exits.flatMap((exit, i) =>
+      Exit.isFailure(exit)
+        ? [{ itemIdentifier: event.Records[i].messageId }]
+        : [],
+    );
+    return { batchItemFailures };
   } finally {
     ptMetrics.publishStoredMetrics();
   }
-
-  return { batchItemFailures };
 };
