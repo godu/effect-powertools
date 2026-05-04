@@ -1,52 +1,91 @@
+// =============================================================================
+// TanStack Start middlewares for the Effect ↔ Powertools bridge.
+//
+// Concurrency caveat: the Powertools tracer's segment context is process-
+// global (cls-hooked / aws-xray-sdk-core). Lambda's one-request-per-container
+// model masks this; under any preset with concurrency > 1 (local dev,
+// Fargate, multi-process node servers) two concurrent invocations will race
+// the global segment and cross-contaminate traces. Same constraint already
+// flagged in `tracer.ts` for `Effect.fork`.
+// =============================================================================
+
 import type { Segment, Subsegment } from "aws-xray-sdk-core";
 import { createMiddleware } from "@tanstack/react-start";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Option from "effect/Option";
 import * as Tracer from "effect/Tracer";
 
 import { PowertoolsMetricsService } from "./metrics";
 import { PowertoolsTracerService, stripXrayTraceIdPrefix } from "./tracer";
 
 // =============================================================================
-// runtimeMiddleware — build a ManagedRuntime once at module load and inject
-// it into ctx.context so downstream routes / server-fns can read it.
+// runtimeMiddleware — build a ManagedRuntime once and inject into ctx.context
 // =============================================================================
+
+// Tracks runtimes whose SIGTERM disposer we've already registered, so calling
+// `runtimeMiddleware()` more than once doesn't leak listeners.
+const registeredDisposers = new WeakSet<ManagedRuntime.ManagedRuntime<unknown, unknown>>();
 
 export const runtimeMiddleware = <A, E>(layer: Layer.Layer<A, E>) => {
   const runtime = ManagedRuntime.make(layer);
-  if (typeof process !== "undefined" && typeof process.on === "function") {
+  if (
+    !registeredDisposers.has(
+      runtime as ManagedRuntime.ManagedRuntime<unknown, unknown>,
+    ) &&
+    typeof process !== "undefined" &&
+    typeof process.on === "function"
+  ) {
+    registeredDisposers.add(
+      runtime as ManagedRuntime.ManagedRuntime<unknown, unknown>,
+    );
     process.on("SIGTERM", () => {
       void runtime.dispose();
     });
   }
-  return createMiddleware().server(async ({ next }) =>
-    next({ context: { runtime } }),
-  );
+  return createMiddleware().server<{
+    runtime: ManagedRuntime.ManagedRuntime<A, E>;
+  }>(async ({ next }) => next({ context: { runtime } }));
 };
 
+// Helper for routes: read `runtime` out of ctx.context with a single,
+// well-commented cast. The TanStack Start types don't yet propagate global-
+// middleware context to route handlers, so this stays as the choke point.
+export const requireRuntime = <R = never, E = never>(ctx: {
+  context: unknown;
+}): ManagedRuntime.ManagedRuntime<R, E> =>
+  (ctx.context as { runtime: ManagedRuntime.ManagedRuntime<R, E> }).runtime;
+
 // =============================================================================
-// observabilityMiddleware — faithful port of Powertools middy
-// `captureLambdaHandler` (packages/tracer/src/middleware/middy.ts) plus the
-// X-Ray segment-document HTTP block per the spec at
+// observabilityMiddleware — captureLambdaHandler port + X-Ray http block
+//
+// Faithful port of Powertools middy `captureLambdaHandler`
+// (packages/tracer/src/middleware/middy.ts) plus the X-Ray segment-document
+// `http` block per
 // https://docs.aws.amazon.com/xray/latest/devguide/xray-api-segmentdocuments.html#api-segmentdocuments-http
 //
 // Operation order matches middy:
-//   before:  isTracingEnabled → getSegment → addNewSubsegment("## name")
-//            → setSegment(sub) → annotateColdStart → addServiceNameAnnotation
-//   after:   addResponseAsMetadata(result, name) → close()
-//   onError: addErrorAsMetadata(err) → close()
-//   close:   subsegment.close() → setSegment(parent)
-//
-// Reads the raw Powertools Tracer through `PowertoolsTracerService`; calls
-// `captureColdStart()` / `flush()` on `PowertoolsMetricsService` (Effect-wrapped
-// helpers). No direct Powertools imports leak to consumer code.
+//   acquire (before): isTracingEnabled → getSegment → addNewSubsegment("## name")
+//                     → setSegment(sub) → http.request → annotateColdStart
+//                     → addServiceNameAnnotation → captureColdStartMetric
+//                     → addDimension
+//   use:              await next(...) (TanStack Start)
+//   release (always): on success → http.response + addResponseAsMetadata
+//                     on failure → http.response 500 + addErrorAsMetadata
+//                     subsegment.close() → setSegment(parent) → flush metrics
 //
 // Effect-side parent chaining: an `ExternalSpan` is built from the X-Ray
-// subsegment and provided to route programs via `Layer.parentSpan(...)`,
-// so route-side `Effect.withSpan(...)` declares the Lambda subsegment as
-// its parent both on the Effect side and on the X-Ray side (via cls-hooked
-// context, which the bridge tracer reads).
+// subsegment and provided to route programs via `Layer.parentSpan(...)` —
+// every `run*` method of the runtime exposed to the route auto-applies it,
+// so route-side `Effect.withSpan(...)` declares the Lambda subsegment as its
+// parent both on the Effect side and on the X-Ray side (cls-hooked).
+//
+// Errors thrown by `next()` are preserved verbatim — `Effect.acquireUseRelease`
+// guarantees the release path can't shadow the use-path error, and we unwrap
+// Effect's typed failure back to the original `throw`able at the boundary.
 // =============================================================================
 
 export interface ObservabilityOptions {
@@ -66,13 +105,13 @@ type XRayHttp = {
 };
 
 const setHttpRequest = (
-  sub: unknown,
+  sub: Subsegment,
   request: Request,
   pathname: string,
 ): void => {
   const url = new URL(request.url);
   const xff = request.headers.get("x-forwarded-for");
-  const target = sub as { http?: XRayHttp };
+  const target = sub as unknown as { http?: XRayHttp };
   target.http = {
     ...target.http,
     request: {
@@ -85,37 +124,59 @@ const setHttpRequest = (
   };
 };
 
-const setHttpResponse = (sub: unknown, response: Response): void => {
-  const cl = response.headers.get("content-length");
-  const contentLength = cl !== null ? Number.parseInt(cl, 10) : Number.NaN;
-  const target = sub as { http?: XRayHttp };
+const setHttpResponseStatus = (
+  sub: Subsegment,
+  status: number,
+  contentLength: number | undefined,
+): void => {
+  const target = sub as unknown as { http?: XRayHttp };
   target.http = {
     ...target.http,
     response: {
-      status: response.status,
-      ...(Number.isFinite(contentLength)
-        ? { content_length: contentLength }
-        : {}),
+      status,
+      ...(contentLength !== undefined ? { content_length: contentLength } : {}),
     },
   };
 };
 
+const parseContentLength = (response: Response): number | undefined => {
+  const cl = response.headers.get("content-length");
+  if (cl === null) return undefined;
+  const n = Number.parseInt(cl, 10);
+  return Number.isFinite(n) ? n : undefined;
+};
+
+// Wrap a ManagedRuntime so every `run*` method auto-applies
+// `Layer.parentSpan(span)`. Equivalent in spirit to
+// `Runtime.updateContext(Context.add(Tracer.ParentSpan, span))`, but applied
+// per-call so we don't need to await the lazy underlying Runtime synchronously.
 const wrapRuntimeWithParentSpan = <R, E>(
   rt: ManagedRuntime.ManagedRuntime<R, E>,
   span: Tracer.AnySpan,
 ): ManagedRuntime.ManagedRuntime<R, E> => {
   const parentLayer = Layer.parentSpan(span);
+  const provide = <A, EE>(eff: Effect.Effect<A, EE, R>) =>
+    Effect.provide(eff, parentLayer);
   return new Proxy(rt, {
     get(target, prop, receiver) {
-      if (prop === "runPromise") {
-        return <A, EE>(effect: Effect.Effect<A, EE, R>) =>
-          target.runPromise(Effect.provide(effect, parentLayer));
+      switch (prop) {
+        case "runPromise":
+        case "runPromiseExit":
+        case "runFork":
+        case "runSync":
+        case "runSyncExit":
+        case "runCallback": {
+          const fn = Reflect.get(target, prop, receiver) as (
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            ...args: any[]
+          ) => unknown;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return (eff: Effect.Effect<any, any, R>, ...rest: any[]) =>
+            fn.call(target, provide(eff), ...rest);
+        }
+        default:
+          return Reflect.get(target, prop, receiver);
       }
-      if (prop === "runPromiseExit") {
-        return <A, EE>(effect: Effect.Effect<A, EE, R>) =>
-          target.runPromiseExit(Effect.provide(effect, parentLayer));
-      }
-      return Reflect.get(target, prop, receiver);
     },
   });
 };
@@ -126,6 +187,13 @@ interface SetupResult {
   readonly sub: Subsegment | undefined;
 }
 
+// Sentinel that wraps a Promise rejection so we can preserve the original
+// error verbatim across the Effect boundary.
+class NextError {
+  readonly _tag = "NextError";
+  constructor(readonly error: unknown) {}
+}
+
 type ObservabilityRuntime = ManagedRuntime.ManagedRuntime<
   PowertoolsTracerService | PowertoolsMetricsService,
   never
@@ -134,16 +202,20 @@ type ObservabilityRuntime = ManagedRuntime.ManagedRuntime<
 export const observabilityMiddleware = (opts: ObservabilityOptions = {}) =>
   createMiddleware().server(
     async ({ next, request, pathname, context }) => {
-      const runtime = (context as unknown as { runtime: ObservabilityRuntime })
-        .runtime;
+      const runtime = (
+        context as unknown as { runtime: ObservabilityRuntime }
+      ).runtime;
 
       const name =
         opts.resolveSpanName?.(request, pathname) ??
         opts.serviceName ??
         `${request.method} ${pathname}`;
 
-      // === before ===
-      const setup: SetupResult = await runtime.runPromise(
+      // Capture-once for use as the call site's typed-result.
+      type NextResult = Awaited<ReturnType<typeof next>>;
+
+      const program = Effect.acquireUseRelease(
+        // ---------- acquire ----------
         Effect.gen(function* () {
           const ptTracer = yield* PowertoolsTracerService;
           const ptMetrics = yield* PowertoolsMetricsService;
@@ -151,7 +223,6 @@ export const observabilityMiddleware = (opts: ObservabilityOptions = {}) =>
           const tracingEnabled = ptTracer.isTracingEnabled();
           let parent: Segment | Subsegment | undefined;
           let sub: Subsegment | undefined;
-
           if (tracingEnabled) {
             parent = ptTracer.getSegment();
             sub = parent?.addNewSubsegment(`## ${name}`);
@@ -162,68 +233,75 @@ export const observabilityMiddleware = (opts: ObservabilityOptions = {}) =>
             ptTracer.annotateColdStart();
             ptTracer.addServiceNameAnnotation();
           }
-
           yield* ptMetrics.captureColdStart();
           yield* ptMetrics.addDimension(
             "environment",
             process.env.STAGE ?? "dev",
           );
-          return { tracingEnabled, parent, sub };
+          return { tracingEnabled, parent, sub } as SetupResult;
         }),
-      );
-
-      // Construct an ExternalSpan so route-side Effect spans declare the
-      // Lambda subsegment as their parent (Layer.parentSpan).
-      // `trace_id` is set at runtime on subsegments (segments/attributes/subsegment.js)
-      // but not declared on the @types — cast to read it.
-      const externalSpan: Tracer.AnySpan | undefined = setup.sub
-        ? Tracer.externalSpan({
-            spanId: setup.sub.id,
-            traceId: stripXrayTraceIdPrefix(
-              (setup.sub as unknown as { trace_id?: string }).trace_id,
-            ),
-            sampled: true,
-          })
-        : undefined;
-
-      const exposedRuntime = externalSpan
-        ? wrapRuntimeWithParentSpan(runtime, externalSpan)
-        : runtime;
-
-      try {
-        const result = await next({ context: { runtime: exposedRuntime } });
-
-        // === after (success) ===
-        await runtime.runPromise(
+        // ---------- use ----------
+        (setup) =>
           Effect.gen(function* () {
-            const ptTracer = yield* PowertoolsTracerService;
-            if (setup.sub) setHttpResponse(setup.sub, result.response);
-            if (setup.tracingEnabled) {
-              ptTracer.addResponseAsMetadata(result.response, name);
-            }
+            // Build ExternalSpan from the live subsegment so route-side
+            // Effect spans declare the Lambda subsegment as their parent.
+            const externalSpan: Tracer.AnySpan | undefined = setup.sub
+              ? Tracer.externalSpan({
+                  spanId: setup.sub.id,
+                  traceId: stripXrayTraceIdPrefix(
+                    setup.sub.segment?.trace_id,
+                  ),
+                  sampled: true,
+                })
+              : undefined;
+            const exposedRuntime = externalSpan
+              ? wrapRuntimeWithParentSpan(runtime, externalSpan)
+              : runtime;
+            return yield* Effect.tryPromise({
+              try: () =>
+                next({
+                  context: { runtime: exposedRuntime },
+                }) as Promise<NextResult>,
+              catch: (e) => new NextError(e),
+            });
           }),
-        );
-        return result;
-      } catch (err) {
-        // === onError ===
-        await runtime.runPromise(
-          Effect.gen(function* () {
-            const ptTracer = yield* PowertoolsTracerService;
-            if (setup.sub) {
-              setHttpResponse(setup.sub, new Response(null, { status: 500 }));
-            }
-            if (setup.tracingEnabled) {
-              ptTracer.addErrorAsMetadata(err as Error);
-            }
-          }),
-        );
-        throw err;
-      } finally {
-        // === close (always) ===
-        await runtime.runPromise(
+        // ---------- release (always) ----------
+        (setup, exit) =>
           Effect.gen(function* () {
             const ptTracer = yield* PowertoolsTracerService;
             const ptMetrics = yield* PowertoolsMetricsService;
+
+            if (Exit.isSuccess(exit)) {
+              if (setup.sub) {
+                setHttpResponseStatus(
+                  setup.sub,
+                  exit.value.response.status,
+                  parseContentLength(exit.value.response),
+                );
+              }
+              if (setup.tracingEnabled) {
+                ptTracer.addResponseAsMetadata(
+                  {
+                    status: exit.value.response.status,
+                    statusText: exit.value.response.statusText,
+                  },
+                  name,
+                );
+              }
+            } else {
+              if (setup.sub) setHttpResponseStatus(setup.sub, 500, undefined);
+              if (setup.tracingEnabled) {
+                const failure = Cause.failureOption(exit.cause);
+                const err =
+                  Option.isSome(failure) && failure.value instanceof NextError
+                    ? failure.value.error
+                    : Cause.squash(exit.cause);
+                ptTracer.addErrorAsMetadata(
+                  err instanceof Error ? err : new Error(String(err)),
+                );
+              }
+            }
+
             if (setup.sub) {
               try {
                 setup.sub.close();
@@ -234,7 +312,19 @@ export const observabilityMiddleware = (opts: ObservabilityOptions = {}) =>
             if (setup.parent) ptTracer.setSegment(setup.parent);
             yield* ptMetrics.flush();
           }),
-        );
+      );
+
+      const exit = await runtime.runPromiseExit(program);
+      if (Exit.isFailure(exit)) {
+        // Re-raise the original `throw` from `next()` so TanStack Start sees
+        // it verbatim. Anything else (defect inside acquire/release) becomes
+        // an Error built from Cause.pretty.
+        const failure = Cause.failureOption(exit.cause);
+        if (Option.isSome(failure) && failure.value instanceof NextError) {
+          throw failure.value.error;
+        }
+        throw new Error(Cause.pretty(exit.cause));
       }
+      return exit.value;
     },
   );

@@ -69,15 +69,11 @@ const setAttributeOnSubsegment = (
   sub.addAnnotation(key, Inspectable.toStringUnknown(value));
 };
 
-// Web Crypto API — works in both Node 20+ and browsers, no node:crypto
-// dependency that breaks Vite's client build.
-const randomHex = (len: number): string => {
-  const bytes = new Uint8Array(Math.ceil(len / 2));
-  globalThis.crypto.getRandomValues(bytes);
-  let out = "";
-  for (const b of bytes) out += b.toString(16).padStart(2, "0");
-  return out.slice(0, len);
-};
+// `crypto.randomUUID()` is in both Node 20+ and modern browsers — no
+// node:crypto dependency that breaks Vite's client build. UUIDs are 32 hex
+// chars + 4 dashes; strip the dashes to get a hex string.
+const randomHex = (len: number): string =>
+  globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, len);
 
 const resolveParentForSubsegment = (
   ptTracer: PowertoolsTracer,
