@@ -1,5 +1,3 @@
-import "@tanstack/react-start/server-only";
-
 import type { Segment, Subsegment } from "aws-xray-sdk-core";
 import { createMiddleware } from "@tanstack/react-start";
 import * as Effect from "effect/Effect";
@@ -7,7 +5,7 @@ import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Tracer from "effect/Tracer";
 
-import { PowertoolsMetricsService } from "./metrics-service";
+import { PowertoolsMetricsService } from "./metrics";
 import { PowertoolsTracerService, stripXrayTraceIdPrefix } from "./tracer";
 
 // =============================================================================

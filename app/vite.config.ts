@@ -22,23 +22,7 @@ export default defineConfig({
     },
   },
   plugins: [
-    // `mock` mode replaces server-only modules with stubs in the client
-    // build (see `import "@tanstack/react-start/server-only"`). Without
-    // this, the client bundle pulls Powertools (Logger/Metrics/Tracer)
-    // through the layer and errors on Node-only APIs like `randomInt`.
-    tanstackStart({
-      importProtection: {
-        enabled: true,
-        behavior: "mock",
-        server: {
-          specifiers: [
-            /^@aws-lambda-powertools\//,
-            /^@aws-sdk\//,
-            "aws-xray-sdk-core",
-          ],
-        },
-      },
-    }),
+    tanstackStart(),
     viteReact(),
     nitro({
       preset: "aws_lambda",
