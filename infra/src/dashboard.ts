@@ -8,6 +8,7 @@ export interface DashboardArgs {
   region: string;
   producer: aws.lambda.Function;
   consumer: aws.lambda.Function;
+  trigger: aws.lambda.Function;
   mainQueue: aws.sqs.Queue;
   dlq: aws.sqs.Queue;
   dataBucket: aws.s3.Bucket;
@@ -18,21 +19,31 @@ export function createDashboard(args: DashboardArgs): aws.cloudwatch.Dashboard {
     .all([
       args.producer.name,
       args.consumer.name,
+      args.trigger.name,
       args.mainQueue.name,
       args.dlq.name,
       args.dataBucket.bucket,
     ])
-    .apply(([producerName, consumerName, mainQueueName, dlqName, bucket]) =>
-      JSON.stringify(
-        buildDashboard({
-          region: args.region,
-          producerName,
-          consumerName,
-          mainQueueName,
-          dlqName,
-          bucket,
-        }),
-      ),
+    .apply(
+      ([
+        producerName,
+        consumerName,
+        triggerName,
+        mainQueueName,
+        dlqName,
+        bucket,
+      ]) =>
+        JSON.stringify(
+          buildDashboard({
+            region: args.region,
+            producerName,
+            consumerName,
+            triggerName,
+            mainQueueName,
+            dlqName,
+            bucket,
+          }),
+        ),
     );
 
   return new aws.cloudwatch.Dashboard("dash", {
@@ -45,6 +56,7 @@ interface DashboardInputs {
   region: string;
   producerName: string;
   consumerName: string;
+  triggerName: string;
   mainQueueName: string;
   dlqName: string;
   bucket: string;
@@ -59,19 +71,64 @@ function buildDashboard(d: DashboardInputs): unknown {
         24,
         2,
         [
-          `# ${d.producerName} → SQS → ${d.consumerName} — observability dashboard`,
+          `# CloudFront → ${d.triggerName} → ${d.producerName} → SQS → ${d.consumerName} — observability dashboard`,
           "",
-          "EventBridge (1/min) ▶ **producer** ▶ SQS ▶ **consumer** ▶ S3.",
-          "Powertools emits structured logs, custom metrics (EMF), and X-Ray subsegments from both lambdas.",
+          "Frontend ▶ **trigger** (Function URL) ▶ **producer** ▶ SQS ▶ **consumer** ▶ S3.",
+          "Powertools emits structured logs, custom metrics (EMF), and X-Ray subsegments from all three lambdas.",
         ].join("\n"),
       ),
 
       header(0, 2, 24, 1, "## Lambda"),
-      lambdaInvocations(0, 3, 8, 6, d.region, d.producerName, d.consumerName),
-      lambdaDuration(8, 3, 8, 6, d.region, d.producerName, d.consumerName),
-      lambdaErrors(16, 3, 8, 6, d.region, d.producerName, d.consumerName),
-      lambdaConcurrent(0, 9, 12, 6, d.region, d.producerName, d.consumerName),
-      lambdaInsightsInit(12, 9, 12, 6, d.region, d.producerName, d.consumerName),
+      lambdaInvocations(
+        0,
+        3,
+        8,
+        6,
+        d.region,
+        d.triggerName,
+        d.producerName,
+        d.consumerName,
+      ),
+      lambdaDuration(
+        8,
+        3,
+        8,
+        6,
+        d.region,
+        d.triggerName,
+        d.producerName,
+        d.consumerName,
+      ),
+      lambdaErrors(
+        16,
+        3,
+        8,
+        6,
+        d.region,
+        d.triggerName,
+        d.producerName,
+        d.consumerName,
+      ),
+      lambdaConcurrent(
+        0,
+        9,
+        12,
+        6,
+        d.region,
+        d.triggerName,
+        d.producerName,
+        d.consumerName,
+      ),
+      lambdaInsightsInit(
+        12,
+        9,
+        12,
+        6,
+        d.region,
+        d.triggerName,
+        d.producerName,
+        d.consumerName,
+      ),
 
       header(0, 15, 24, 1, "## SQS"),
       sqsDepth(0, 16, 8, 6, d.region, d.mainQueueName),
@@ -83,11 +140,38 @@ function buildDashboard(d: DashboardInputs): unknown {
       s3Errors(12, 23, 12, 6, d.region, d.bucket),
 
       header(0, 29, 24, 1, "## Powertools custom metrics"),
-      powertoolsCount(0, 30, 12, 6, d.region, d.producerName, d.consumerName),
-      powertoolsLatency(12, 30, 12, 6, d.region, d.producerName, d.consumerName),
+      powertoolsCount(
+        0,
+        30,
+        12,
+        6,
+        d.region,
+        d.triggerName,
+        d.producerName,
+        d.consumerName,
+      ),
+      powertoolsLatency(
+        12,
+        30,
+        12,
+        6,
+        d.region,
+        d.triggerName,
+        d.producerName,
+        d.consumerName,
+      ),
       powertoolsBytes(0, 36, 12, 6, d.region, d.producerName),
       powertoolsAmount(12, 36, 12, 6, d.region, d.consumerName),
-      powertoolsColdStart(0, 42, 24, 6, d.region, d.producerName, d.consumerName),
+      powertoolsColdStart(
+        0,
+        42,
+        24,
+        6,
+        d.region,
+        d.triggerName,
+        d.producerName,
+        d.consumerName,
+      ),
 
       header(0, 48, 24, 1, "## Trace map"),
       traceMapLink(0, 49, 24, 4, d.region),
@@ -141,11 +225,13 @@ function lambdaInvocations(
   w: number,
   h: number,
   region: string,
+  triggerName: string,
   producerName: string,
   consumerName: string,
 ) {
   return metricWidget(x, y, w, h, region, "Invocations", [
-    ["AWS/Lambda", "Invocations", "FunctionName", producerName],
+    ["AWS/Lambda", "Invocations", "FunctionName", triggerName],
+    [".", ".", ".", producerName],
     [".", ".", ".", consumerName],
   ]);
 }
@@ -156,6 +242,7 @@ function lambdaDuration(
   w: number,
   h: number,
   region: string,
+  triggerName: string,
   producerName: string,
   consumerName: string,
 ) {
@@ -167,7 +254,8 @@ function lambdaDuration(
     region,
     "Duration p95",
     [
-      ["AWS/Lambda", "Duration", "FunctionName", producerName],
+      ["AWS/Lambda", "Duration", "FunctionName", triggerName],
+      [".", ".", ".", producerName],
       [".", ".", ".", consumerName],
     ],
     "p95",
@@ -180,13 +268,16 @@ function lambdaErrors(
   w: number,
   h: number,
   region: string,
+  triggerName: string,
   producerName: string,
   consumerName: string,
 ) {
   return metricWidget(x, y, w, h, region, "Errors + Throttles", [
-    ["AWS/Lambda", "Errors", "FunctionName", producerName],
+    ["AWS/Lambda", "Errors", "FunctionName", triggerName],
+    [".", ".", ".", producerName],
     [".", ".", ".", consumerName],
-    ["AWS/Lambda", "Throttles", "FunctionName", producerName],
+    ["AWS/Lambda", "Throttles", "FunctionName", triggerName],
+    [".", ".", ".", producerName],
     [".", ".", ".", consumerName],
   ]);
 }
@@ -197,6 +288,7 @@ function lambdaConcurrent(
   w: number,
   h: number,
   region: string,
+  triggerName: string,
   producerName: string,
   consumerName: string,
 ) {
@@ -208,7 +300,8 @@ function lambdaConcurrent(
     region,
     "Concurrent executions",
     [
-      ["AWS/Lambda", "ConcurrentExecutions", "FunctionName", producerName],
+      ["AWS/Lambda", "ConcurrentExecutions", "FunctionName", triggerName],
+      [".", ".", ".", producerName],
       [".", ".", ".", consumerName],
     ],
     "Maximum",
@@ -221,6 +314,7 @@ function lambdaInsightsInit(
   w: number,
   h: number,
   region: string,
+  triggerName: string,
   producerName: string,
   consumerName: string,
 ) {
@@ -232,7 +326,8 @@ function lambdaInsightsInit(
     region,
     "Lambda Insights — init duration (ms)",
     [
-      ["LambdaInsights", "init_duration", "function_name", producerName],
+      ["LambdaInsights", "init_duration", "function_name", triggerName],
+      [".", ".", ".", producerName],
       [".", ".", ".", consumerName],
     ],
     "Average",
@@ -359,11 +454,13 @@ function powertoolsCount(
   w: number,
   h: number,
   region: string,
+  triggerName: string,
   producerName: string,
   consumerName: string,
 ) {
   return metricWidget(x, y, w, h, region, "Orders processed (count)", [
-    [POWERTOOLS_NAMESPACE, "OrdersEmitted", "service", producerName],
+    [POWERTOOLS_NAMESPACE, "TriggersReceived", "service", triggerName],
+    [".", "OrdersEmitted", "service", producerName],
     [".", "OrdersWritten", "service", consumerName],
     [".", "RecordsRejected", "service", consumerName],
   ]);
@@ -375,6 +472,7 @@ function powertoolsLatency(
   w: number,
   h: number,
   region: string,
+  triggerName: string,
   producerName: string,
   consumerName: string,
 ) {
@@ -386,7 +484,8 @@ function powertoolsLatency(
     region,
     "Powertools work latency (ms)",
     [
-      [POWERTOOLS_NAMESPACE, "EmitLatencyMs", "service", producerName],
+      [POWERTOOLS_NAMESPACE, "TriggerLatency", "service", triggerName],
+      [".", "EmitLatencyMs", "service", producerName],
       [".", "WriteLatency", "service", consumerName],
     ],
     "Average",
@@ -439,11 +538,13 @@ function powertoolsColdStart(
   w: number,
   h: number,
   region: string,
+  triggerName: string,
   producerName: string,
   consumerName: string,
 ) {
   return metricWidget(x, y, w, h, region, "Powertools ColdStart", [
-    [POWERTOOLS_NAMESPACE, "ColdStart", "service", producerName],
+    [POWERTOOLS_NAMESPACE, "ColdStart", "service", triggerName],
+    [".", ".", ".", producerName],
     [".", ".", ".", consumerName],
   ]);
 }

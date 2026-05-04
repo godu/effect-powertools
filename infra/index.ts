@@ -3,7 +3,8 @@ import * as pulumi from "@pulumi/pulumi";
 import { createDataBucket } from "./src/bucket";
 import { createQueue } from "./src/queues";
 import { createLambdas } from "./src/lambdas";
-import { createSchedule } from "./src/producer";
+import { createTrigger } from "./src/trigger";
+import { createFrontend } from "./src/frontend";
 import { enableApplicationSignals, createSlos } from "./src/appSignals";
 import { createAppInsights } from "./src/appInsights";
 import { createAlarms } from "./src/alarms";
@@ -31,8 +32,16 @@ const { producer, consumer } = createLambdas({
   tags,
 });
 
-// EventBridge schedule fires the producer every minute
-createSchedule({ namePrefix, producerLambda: producer, tags });
+// Trigger Lambda invokes the producer; replaces the EventBridge schedule
+const trigger = createTrigger({ namePrefix, producerLambda: producer, tags });
+
+// Frontend: S3 bucket + CloudFront distribution; CloudFront proxies /api/*
+// to the trigger Lambda Function URL
+const frontend = createFrontend({
+  namePrefix,
+  triggerFunctionUrl: trigger.functionUrl,
+  tags,
+});
 
 // Observability plane
 const discovery = enableApplicationSignals();
@@ -41,6 +50,7 @@ createSlos(
     namePrefix,
     producerName: producer.name,
     consumerName: consumer.name,
+    triggerName: trigger.fn.name,
     tags,
   },
   discovery,
@@ -55,6 +65,7 @@ createAlarms({
   namePrefix,
   producer,
   consumer,
+  trigger: trigger.fn,
   dlq: queue.dlq,
   tags,
 });
@@ -63,6 +74,7 @@ const dashboard = createDashboard({
   region: REGION,
   producer,
   consumer,
+  trigger: trigger.fn,
   mainQueue: queue.main,
   dlq: queue.dlq,
   dataBucket,
@@ -74,5 +86,9 @@ export const queueUrl = queue.main.url;
 export const dlqUrl = queue.dlq.url;
 export const producerName = producer.name;
 export const consumerName = consumer.name;
+export const triggerName = trigger.fn.name;
+export const triggerFunctionUrl = trigger.functionUrl.functionUrl;
+export const frontendBucket = frontend.bucket.bucket;
+export const frontendUrl = pulumi.interpolate`https://${frontend.distribution.domainName}`;
 export const dashboardUrl = pulumi.interpolate`https://${REGION}.console.aws.amazon.com/cloudwatch/home?region=${REGION}#dashboards:name=${dashboard.dashboardName}`;
 export const traceMapUrl = `https://${REGION}.console.aws.amazon.com/cloudwatch/home?region=${REGION}#xray:service-map/map`;

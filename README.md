@@ -139,17 +139,35 @@ displays it in the metric panel.
 
 ## Worked example
 
-The repo deploys a 2-Lambda pipeline that exercises every row above:
+The repo deploys a 3-Lambda pipeline plus a frontend that exercises every
+row above:
 
 ```
-EventBridge (1/min) → Python producer → SQS → TypeScript/Effect consumer → S3
+[Browser]
+   │ HTTPS (POST /api/trigger)
+   ▼
+[CloudFront]
+   ├── /api/*  → Lambda Function URL → trigger Lambda (Nitro)
+   │                                       │ Lambda Invoke
+   │                                       ▼
+   │                                   producer (Py) ─→ SQS ─→ consumer (TS/Effect) ─→ S3
+   └── /*      → S3 (frontend bundle)
 ```
 
+- [`frontend/`](frontend) — TanStack Router + Effect SPA built with Vite.
+  Single page with a "Trigger order" button that POSTs to `/api/trigger`
+  via an Effect-wrapped `fetch`.
+- [`lambdas/trigger/`](lambdas/trigger) — TypeScript/Effect Lambda built
+  with **Nitro** (`preset: "aws-lambda"`). Receives the HTTP request via a
+  Lambda Function URL, invokes the producer with the AWS SDK
+  (`InvocationType: RequestResponse`), and returns the new order to the
+  frontend. Exercises every bridge metric helper plus a
+  CLIENT-kind `Effect.withSpan("lambda.invoke")` around the SDK call.
 - [`lambdas/python/src/handler.py`](lambdas/python/src/handler.py) — Python
   producer using Powertools directly. All 5 log levels, `logger.exception`,
-  three subsegments with annotations + metadata, multiple metric units
-  (Count / Bytes / Milliseconds), static dimension via `add_dimension`,
-  per-emission dimension via `single_metric`.
+  multiple `@capture_method` subsegments with annotations + metadata,
+  multiple metric units (Count / Bytes / Milliseconds), static dimension
+  via `add_dimension`, per-emission dimension via `single_metric`.
 - [`lambdas/typescript/src/handler.ts`](lambdas/typescript/src/handler.ts) —
   TypeScript/Effect consumer using the Effect bridge. All 5 log levels,
   nested `Effect.withSpan`, `Effect.annotateCurrentSpan`,
@@ -159,3 +177,7 @@ EventBridge (1/min) → Python producer → SQS → TypeScript/Effect consumer �
   `batchItemFailures`.
 - [`lambdas/shared/effect-powertools/`](lambdas/shared/effect-powertools) —
   the Effect↔Powertools bridge.
+
+The trigger Lambda's Function URL has `AuthType: NONE` for simplicity; in
+a production setup you'd lock it to CloudFront-only via OAC + a request
+signing policy.

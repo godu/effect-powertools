@@ -243,7 +243,7 @@ function createConsumerRole(args: ConsumerRoleArgs): aws.iam.Role {
   return role;
 }
 
-const assumeLambda = JSON.stringify({
+export const assumeLambda = JSON.stringify({
   Version: "2012-10-17",
   Statement: [
     {
@@ -254,7 +254,7 @@ const assumeLambda = JSON.stringify({
   ],
 });
 
-function attachManagedPolicies(role: aws.iam.Role, prefix: string): void {
+export function attachManagedPolicies(role: aws.iam.Role, prefix: string): void {
   for (const [name, arn] of [
     ["basic", "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"],
     ["xray", "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"],

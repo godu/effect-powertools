@@ -4,6 +4,7 @@ export interface AlarmArgs {
   namePrefix: string;
   producer: aws.lambda.Function;
   consumer: aws.lambda.Function;
+  trigger: aws.lambda.Function;
   dlq: aws.sqs.Queue;
   tags: Record<string, string>;
 }
@@ -14,6 +15,7 @@ export function createAlarms(args: AlarmArgs): aws.cloudwatch.MetricAlarm[] {
   for (const [role, fn] of [
     ["producer", args.producer],
     ["consumer", args.consumer],
+    ["trigger", args.trigger],
   ] as const) {
     alarms.push(
       lambdaErrorsAlarm(args.namePrefix, role, fn, args.tags),
