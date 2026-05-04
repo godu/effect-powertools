@@ -30,6 +30,16 @@ const layer = PowertoolsLayer({
 
 const runtime = ManagedRuntime.make(layer);
 
+// Lambda warm-reuse pattern: runtime is built once at module load and reused
+// across invocations. Lambda emits SIGTERM with ~500ms grace on container
+// shutdown; flush any scoped resources (none today, but future-proofing for
+// when the layer set grows).
+process.on("SIGTERM", () => {
+  runtime
+    .dispose()
+    .finally(() => process.exit(0));
+});
+
 interface Order {
   readonly orderId: string;
   readonly customerId: string;
@@ -41,19 +51,14 @@ const ordersObserved = counter("OrdersObserved", { unit: MetricUnit.Count });
 const orderAmountHistogram = histogram(
   "OrderAmountCents",
   [100, 500, 1000, 5000, 10000, 50000, 100000],
-  { unit: MetricUnit.Count },
+  { unit: MetricUnit.NoUnit },
 );
-const observeLatency = histogram(
-  "ObserveLatencyMs",
-  [1, 5, 10, 25, 50, 100, 250, 500, 1000],
-  { unit: MetricUnit.Milliseconds },
-);
+const observeLatency = Metric.timer("ObserveLatency");
 
 const observeRecord = (record: S3EventRecord) =>
   Effect.gen(function* () {
     const bucket = record.s3.bucket.name;
     const key = decodeURIComponent(record.s3.object.key.replace(/\+/g, " "));
-    const started = Date.now();
 
     yield* Effect.logInfo("object_received").pipe(
       Effect.annotateLogs({ bucket, key }),
@@ -85,7 +90,6 @@ const observeRecord = (record: S3EventRecord) =>
 
     yield* Metric.update(ordersObserved, 1);
     yield* Metric.update(orderAmountHistogram, order.amountCents);
-    yield* Metric.update(observeLatency, Date.now() - started);
 
     yield* Effect.annotateCurrentSpan("orderId", order.orderId);
 
@@ -97,6 +101,7 @@ const observeRecord = (record: S3EventRecord) =>
       }),
     );
   }).pipe(
+    Metric.trackDuration(observeLatency),
     Effect.withSpan("observeRecord", {
       attributes: {
         bucket: record.s3.bucket.name,

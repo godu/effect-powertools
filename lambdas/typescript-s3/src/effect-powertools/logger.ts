@@ -23,11 +23,13 @@ const defaultLevelMap = (level: LogLevel.LogLevel): PowertoolsMethod => {
       return "debug";
     case "Info":
     case "All":
-    case "None":
     default:
       return "info";
   }
 };
+
+const isEmptyCause = (cause: Cause.Cause<unknown>): boolean =>
+  cause._tag === "Empty";
 
 const stringifyMessage = (message: unknown): string => {
   if (typeof message === "string") return message;
@@ -108,9 +110,6 @@ export const makePowertoolsLogger = (
     options.logger[method](message, extras);
   });
 };
-
-const isEmptyCause = (cause: Cause.Cause<unknown>): boolean =>
-  cause._tag === "Empty";
 
 export const PowertoolsLoggerLayer = (
   options: PowertoolsLoggerOptions,

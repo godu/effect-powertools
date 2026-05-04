@@ -1,6 +1,9 @@
 import type { Tracer as PowertoolsTracer } from "@aws-lambda-powertools/tracer";
 import type { Segment, Subsegment } from "aws-xray-sdk-core";
+import { randomBytes } from "node:crypto";
+import * as Cause from "effect/Cause";
 import type * as Context from "effect/Context";
+import * as Inspectable from "effect/Inspectable";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as EffectTracer from "effect/Tracer";
@@ -19,15 +22,6 @@ import * as EffectTracer from "effect/Tracer";
  * will race for the global. The demo handler is strictly sequential.
  */
 
-const ANNOTATION_ALLOWLIST = new Set<string>([
-  "orderId",
-  "customerId",
-  "bucket",
-  "key",
-  "messageId",
-  "service",
-]);
-
 export type AttributeKind = "annotation" | "metadata" | "skip";
 
 export interface PowertoolsTracerOptions {
@@ -38,17 +32,8 @@ export interface PowertoolsTracerOptions {
   ) => AttributeKind;
 }
 
-const defaultClassify = (key: string, value: unknown): AttributeKind => {
-  if (
-    ANNOTATION_ALLOWLIST.has(key) &&
-    (typeof value === "string" ||
-      typeof value === "number" ||
-      typeof value === "boolean")
-  ) {
-    return "annotation";
-  }
-  return "metadata";
-};
+const defaultClassify = (_key: string, _value: unknown): AttributeKind =>
+  "annotation";
 
 interface BridgeSpan extends EffectTracer.Span {
   readonly subsegment: Subsegment | undefined;
@@ -70,25 +55,25 @@ const setAttributeOnSubsegment = (
 ) => {
   const kind = classify(key, value);
   if (kind === "skip") return;
+  if (kind === "metadata") {
+    sub.addMetadata(key, value);
+    return;
+  }
   if (
-    kind === "annotation" &&
-    (typeof value === "string" ||
-      typeof value === "number" ||
-      typeof value === "boolean")
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
   ) {
     sub.addAnnotation(key, value);
     return;
   }
-  sub.addMetadata(key, value);
+  sub.addAnnotation(key, Inspectable.toStringUnknown(value));
 };
 
-const randomHex = (len: number): string => {
-  let out = "";
-  for (let i = 0; i < len; i++) {
-    out += Math.floor(Math.random() * 16).toString(16);
-  }
-  return out;
-};
+const randomHex = (len: number): string =>
+  randomBytes(Math.ceil(len / 2))
+    .toString("hex")
+    .slice(0, len);
 
 const resolveParentForSubsegment = (
   ptTracer: PowertoolsTracer,
@@ -199,10 +184,25 @@ const makeSpan = (
       status = { _tag: "Ended", startTime, endTime, exit };
       if (subsegment) {
         if (exit._tag === "Failure") {
-          try {
-            subsegment.addError(new Error(`effect span "${name}" failed`));
-          } catch {
-            // best-effort
+          const cause = exit.cause;
+          if (Cause.isInterruptedOnly(cause)) {
+            try {
+              subsegment.addAnnotation("interrupted", true);
+            } catch {
+              // best-effort
+            }
+          } else {
+            try {
+              subsegment.addError(new Error(Cause.pretty(cause)));
+            } catch {
+              // best-effort
+            }
+            try {
+              if (Cause.isFailType(cause)) subsegment.addErrorFlag();
+              else subsegment.addFaultFlag();
+            } catch {
+              // best-effort
+            }
           }
         }
         try {

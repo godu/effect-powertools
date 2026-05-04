@@ -18,37 +18,67 @@ import * as MetricKeyType from "effect/MetricKeyType";
  * Effect's own metric snapshots (`Metric.value`, `Metric.snapshot`) keep
  * working.
  *
- * Units are out-of-band hints. Use the `counter` / `histogram` / `gauge` /
- * `frequency` helpers in this module to register a unit alongside a metric
- * name. Direct `Metric.counter("X")` usage still flows through the bridge but
- * defaults to `Count`.
- *
- * Tags from `Metric.tagged(...)` become Powertools dimensions on the emitted
- * data point via `pt.metrics.singleMetric()`.
+ * Units travel on the metric key as a tag: `unit:<MetricUnit value>` for
+ * arbitrary metrics, or `time_unit:milliseconds` (auto-attached by
+ * `Metric.timer`). The tag is stripped from the dimensions sent to Powertools.
+ * Other tags become Powertools dimensions via `pt.metrics.singleMetric()`.
  */
 
 export type MetricUnitValue = (typeof MetricUnit)[keyof typeof MetricUnit];
 
-const unitHints = new Map<string, MetricUnitValue>();
+const UNIT_TAG_KEYS = new Set(["unit", "time_unit"]);
 
-const registerUnit = (name: string, unit: MetricUnitValue | undefined) => {
-  if (unit !== undefined) unitHints.set(name, unit);
+const TIME_UNIT_ALIASES: Record<string, MetricUnitValue> = {
+  nanoseconds: MetricUnit.Microseconds,
+  microseconds: MetricUnit.Microseconds,
+  milliseconds: MetricUnit.Milliseconds,
+  seconds: MetricUnit.Seconds,
 };
 
-const unitFor = (name: string): MetricUnitValue =>
-  unitHints.get(name) ?? MetricUnit.Count;
+const KNOWN_UNITS: ReadonlySet<string> = new Set(Object.values(MetricUnit));
+
+const mapToPowertoolsUnit = (raw: string): MetricUnitValue | undefined => {
+  if (KNOWN_UNITS.has(raw)) return raw as MetricUnitValue;
+  const lower = raw.toLowerCase();
+  if (lower in TIME_UNIT_ALIASES) return TIME_UNIT_ALIASES[lower];
+  return undefined;
+};
+
+const unitFromTags = (
+  tags: ReadonlyArray<{ readonly key: string; readonly value: string }>,
+): MetricUnitValue | undefined => {
+  for (const t of tags) {
+    if (UNIT_TAG_KEYS.has(t.key)) {
+      const mapped = mapToPowertoolsUnit(t.value);
+      if (mapped !== undefined) return mapped;
+    }
+  }
+  return undefined;
+};
 
 let installed: PowertoolsMetrics | undefined;
+let originalGet: ((key: MetricKey.MetricKey.Untyped) => UntypedHook) | undefined;
 
 const ensureInstalled = (metrics: PowertoolsMetrics): void => {
   if (installed === metrics) return;
-  if (installed !== undefined && installed !== metrics) {
+  if (installed !== undefined) {
     throw new Error(
-      "PowertoolsMetricsBridge: cannot rebind to a different Powertools Metrics instance after install",
+      "PowertoolsMetricsBridge: registry is process-global; reuse the original PowertoolsMetrics instance or call __resetForTesting() before rebinding.",
     );
   }
   installed = metrics;
   patchGlobalMetricRegistry(metrics);
+};
+
+export const __resetForTesting = (): void => {
+  if (originalGet !== undefined) {
+    const registry = Metric.globalMetricRegistry as unknown as {
+      get(key: MetricKey.MetricKey.Untyped): UntypedHook;
+    };
+    registry.get = originalGet;
+    originalGet = undefined;
+  }
+  installed = undefined;
 };
 
 interface UntypedHook {
@@ -61,9 +91,10 @@ const patchGlobalMetricRegistry = (metrics: PowertoolsMetrics): void => {
   const registry = Metric.globalMetricRegistry as unknown as {
     get(key: MetricKey.MetricKey.Untyped): UntypedHook;
   };
-  const originalGet = registry.get.bind(registry);
+  originalGet = registry.get.bind(registry);
+  const captured = originalGet;
   registry.get = function patchedGet(key) {
-    const inner = originalGet(key);
+    const inner = captured(key);
     return wrapHook(metrics, key, inner);
   };
 };
@@ -71,7 +102,9 @@ const patchGlobalMetricRegistry = (metrics: PowertoolsMetrics): void => {
 const tagsToDimensions = (
   tags: ReadonlyArray<{ readonly key: string; readonly value: string }>,
 ): ReadonlyArray<readonly [string, string]> =>
-  tags.map((t) => [t.key, t.value] as const);
+  tags
+    .filter((t) => !UNIT_TAG_KEYS.has(t.key))
+    .map((t) => [t.key, t.value] as const);
 
 const emit = (
   metrics: PowertoolsMetrics,
@@ -96,6 +129,7 @@ const wrapHook = (
   inner: UntypedHook,
 ): UntypedHook => {
   const name = key.name;
+  const unit = unitFromTags(key.tags) ?? MetricUnit.Count;
   const dimensions = tagsToDimensions(key.tags);
   const keyType = key.keyType as MetricKeyType.MetricKeyType.Untyped;
 
@@ -104,7 +138,6 @@ const wrapHook = (
     MetricKeyType.isGaugeKey(keyType) ||
     MetricKeyType.isHistogramKey(keyType)
   ) {
-    const unit = unitFor(name);
     return {
       get: () => inner.get(),
       update(input) {
@@ -136,7 +169,7 @@ const wrapHook = (
 };
 
 // ---------------------------------------------------------------------------
-// Metric helpers with unit hints
+// Metric helpers — thin wrappers that pre-tag the unit
 // ---------------------------------------------------------------------------
 
 export interface MetricOptions {
@@ -145,50 +178,57 @@ export interface MetricOptions {
   readonly unit?: MetricUnitValue;
 }
 
+const withUnit = <Type, In, Out>(
+  metric: Metric.Metric<Type, In, Out>,
+  unit: MetricUnitValue | undefined,
+): Metric.Metric<Type, In, Out> =>
+  unit === undefined ? metric : Metric.tagged(metric, "unit", String(unit));
+
 export const counter = (
   name: string,
   opts: MetricOptions = {},
-): Metric.Metric.Counter<number> => {
-  registerUnit(name, opts.unit);
-  return Metric.counter(name, {
-    description: opts.description,
-    incremental: opts.incremental,
-  });
-};
+): Metric.Metric.Counter<number> =>
+  withUnit(
+    Metric.counter(name, {
+      description: opts.description,
+      incremental: opts.incremental,
+    }),
+    opts.unit,
+  );
 
 export const gauge = (
   name: string,
   opts: MetricOptions = {},
-): Metric.Metric.Gauge<number> => {
-  registerUnit(name, opts.unit);
-  return Metric.gauge(name, { description: opts.description });
-};
+): Metric.Metric.Gauge<number> =>
+  withUnit(Metric.gauge(name, { description: opts.description }), opts.unit);
 
 export const histogram = (
   name: string,
   boundaries: ReadonlyArray<number>,
   opts: MetricOptions = {},
-): Metric.Metric.Histogram<number> => {
-  registerUnit(name, opts.unit);
-  return Metric.histogram(
-    name,
-    MetricBoundaries.fromIterable(boundaries),
-    opts.description,
+): Metric.Metric.Histogram<number> =>
+  withUnit(
+    Metric.histogram(
+      name,
+      MetricBoundaries.fromIterable(boundaries),
+      opts.description,
+    ),
+    opts.unit,
   );
-};
 
 export const frequency = (
   name: string,
   opts: MetricOptions & {
     readonly preregisteredWords?: ReadonlyArray<string>;
   } = {},
-): Metric.Metric.Frequency<string> => {
-  registerUnit(name, opts.unit);
-  return Metric.frequency(name, {
-    description: opts.description,
-    preregisteredWords: opts.preregisteredWords,
-  });
-};
+): Metric.Metric.Frequency<string> =>
+  withUnit(
+    Metric.frequency(name, {
+      description: opts.description,
+      preregisteredWords: opts.preregisteredWords,
+    }),
+    opts.unit,
+  );
 
 // ---------------------------------------------------------------------------
 // Effect service tag for the imperative escape hatches
@@ -236,28 +276,17 @@ export const PowertoolsMetricsLayer = (
   });
 
 // ---------------------------------------------------------------------------
-// timed: count + duration histogram around an effect
+// timed: count + duration timer around an effect
 // ---------------------------------------------------------------------------
-
-const defaultDurationBoundaries = MetricBoundaries.fromIterable([
-  1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000,
-]);
 
 export const timed = <A, E, R>(
   name: string,
   effect: Effect.Effect<A, E, R>,
-  opts: { readonly unit?: MetricUnitValue } = {},
 ): Effect.Effect<A, E, R> => {
-  const durName = `${name}DurationMs`;
-  registerUnit(durName, opts.unit ?? MetricUnit.Milliseconds);
-  registerUnit(name, MetricUnit.Count);
   const callCounter = Metric.counter(name);
-  const durHistogram = Metric.histogram(durName, defaultDurationBoundaries);
-  return Effect.gen(function* () {
-    const start = Date.now();
-    const result = yield* effect;
-    yield* Metric.update(callCounter, 1);
-    yield* Metric.update(durHistogram, Date.now() - start);
-    return result;
-  });
+  const durTimer = Metric.timer(`${name}Duration`);
+  return effect.pipe(
+    Metric.trackDuration(durTimer),
+    Effect.tap(() => Metric.update(callCounter, 1)),
+  );
 };
