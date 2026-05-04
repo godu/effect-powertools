@@ -5,22 +5,6 @@ import { nitro } from "nitro/vite";
 
 export default defineConfig({
   server: { port: 3000 },
-  build: {
-    rollupOptions: {
-      // Powertools and the AWS SDK are server-only; they should never end up
-      // in the client bundle. Marking them external at the build level means
-      // any chunk that still references them keeps the import bare. As long
-      // as TanStack Start strips the actual call sites from the client (via
-      // its `.server()` body removal), nothing will try to load these at
-      // runtime in the browser.
-      external: [
-        /^@aws-lambda-powertools\//,
-        /^@aws-sdk\//,
-        /^@smithy\//,
-        "aws-xray-sdk-core",
-      ],
-    },
-  },
   plugins: [
     tanstackStart(),
     viteReact(),

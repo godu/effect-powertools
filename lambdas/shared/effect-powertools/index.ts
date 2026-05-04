@@ -1,3 +1,5 @@
+import "@tanstack/react-start/server-only";
+
 import type { Logger as PowertoolsLogger } from "@aws-lambda-powertools/logger";
 import type { Metrics as PowertoolsMetrics } from "@aws-lambda-powertools/metrics";
 import type { Tracer as PowertoolsTracer } from "@aws-lambda-powertools/tracer";

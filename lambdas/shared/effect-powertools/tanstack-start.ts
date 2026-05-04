@@ -9,6 +9,8 @@
 // flagged in `tracer.ts` for `Effect.fork`.
 // =============================================================================
 
+import "@tanstack/react-start/server-only";
+
 import type { Segment, Subsegment } from "aws-xray-sdk-core";
 import { createMiddleware } from "@tanstack/react-start";
 import * as Cause from "effect/Cause";
