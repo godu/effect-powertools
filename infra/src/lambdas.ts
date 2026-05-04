@@ -118,7 +118,7 @@ function createConsumerLambda(args: PipelineLambdaArgs): FnResult {
     "lambdas",
     "typescript",
     "dist",
-    "handler.js",
+    "handler.mjs",
   );
 
   const fn = new aws.lambda.Function(
@@ -132,7 +132,7 @@ function createConsumerLambda(args: PipelineLambdaArgs): FnResult {
       memorySize: 512,
       timeout: 10,
       code: new pulumi.asset.AssetArchive({
-        "handler.js": new pulumi.asset.FileAsset(handlerPath),
+        "handler.mjs": new pulumi.asset.FileAsset(handlerPath),
       }),
       layers: [powertoolsTypescriptLayerArn, lambdaInsightsArmArn],
       tracingConfig: { mode: "Active" },
