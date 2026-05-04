@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "moduleResolution": "Bundler",
+    "module": "ESNext",
+    "target": "ES2022",
+    "skipLibCheck": true,
+    "strictNullChecks": true,
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "effect": ["./node_modules/effect"],
+      "effect/*": ["./node_modules/effect/*"],
+      "@aws-lambda-powertools/*": ["./node_modules/@aws-lambda-powertools/*"],
+      "aws-xray-sdk-core": ["./node_modules/aws-xray-sdk-core"]
+    }
+  },
+  "include": ["src", "vite.config.ts", "../lambdas/shared/effect-powertools"]
+}

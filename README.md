@@ -139,30 +139,34 @@ displays it in the metric panel.
 
 ## Worked example
 
-The repo deploys a 3-Lambda pipeline plus a frontend that exercises every
-row above:
+The repo deploys a 3-Lambda pipeline plus a unified frontend that exercises
+every row above:
 
 ```
 [Browser]
-   │ HTTPS (POST /api/trigger)
+   │ HTTPS
    ▼
 [CloudFront]
-   ├── /api/*  → Lambda Function URL → trigger Lambda (Nitro)
-   │                                       │ Lambda Invoke
-   │                                       ▼
-   │                                   producer (Py) ─→ SQS ─→ consumer (TS/Effect) ─→ S3
-   └── /*      → S3 (frontend bundle)
+   ├── /api/*  → Lambda Function URL ─┐
+   │                                  ├── unified TanStack Start Lambda
+   └── /*      → Lambda Function URL ─┘   (SSR + API + static assets)
+                                            │ AWS SDK Lambda Invoke
+                                            │ (HTTP-traced via captureHTTPsRequests)
+                                            ▼
+                                          producer (Py) → SQS → consumer (TS/Effect) → S3
 ```
 
-- [`frontend/`](frontend) — TanStack Router + Effect SPA built with Vite.
-  Single page with a "Trigger order" button that POSTs to `/api/trigger`
-  via an Effect-wrapped `fetch`.
-- [`lambdas/trigger/`](lambdas/trigger) — TypeScript/Effect Lambda built
-  with **Nitro** (`preset: "aws-lambda"`). Receives the HTTP request via a
-  Lambda Function URL, invokes the producer with the AWS SDK
-  (`InvocationType: RequestResponse`), and returns the new order to the
-  frontend. Exercises every bridge metric helper plus a
-  CLIENT-kind `Effect.withSpan("lambda.invoke")` around the SDK call.
+- [`app/`](app) — **TanStack Start** app (latest, Vite-based) built per
+  the [build-from-scratch](https://tanstack.com/start/latest/docs/framework/react/build-from-scratch)
+  guide. Serves both the React UI (SSR + hydration) and the
+  `/api/trigger` endpoint from one Lambda. The API handler uses the same
+  Effect↔Powertools bridge as the consumer — all 5 log levels, nested
+  `Effect.withSpan`, every bridge metric helper, `Metric.tagged` for
+  per-emission dimensions, and `captureHTTPsRequests: true` on the
+  Powertools tracer so the AWS SDK Lambda Invoke shows up as an HTTPS
+  subsegment in the X-Ray trace.
+  See [`app/lambda-handler.mjs`](app/lambda-handler.mjs) for the thin
+  Web-Fetch → Lambda Function URL adapter.
 - [`lambdas/python/src/handler.py`](lambdas/python/src/handler.py) — Python
   producer using Powertools directly. All 5 log levels, `logger.exception`,
   multiple `@capture_method` subsegments with annotations + metadata,
@@ -178,6 +182,6 @@ row above:
 - [`lambdas/shared/effect-powertools/`](lambdas/shared/effect-powertools) —
   the Effect↔Powertools bridge.
 
-The trigger Lambda's Function URL has `AuthType: NONE` for simplicity; in
-a production setup you'd lock it to CloudFront-only via OAC + a request
+The app's Function URL has `AuthType: NONE` for simplicity; in a
+production setup you'd lock it to CloudFront-only via OAC + a request
 signing policy.

@@ -1,15 +1,25 @@
-import {
-  createRootRoute,
-  createRoute,
-  createRouter,
-  Outlet,
-  RouterProvider,
-} from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import * as Effect from "effect/Effect";
-import { StrictMode, useState } from "react";
-import { createRoot } from "react-dom/client";
+import { useState } from "react";
 
-import { triggerOrder, type TriggerResponse } from "./api";
+interface TriggerResponse {
+  readonly orderId: string;
+  readonly amountCents?: number;
+}
+
+class TriggerError {
+  readonly _tag = "TriggerError";
+  constructor(readonly props: { readonly cause: string }) {}
+}
+
+const triggerOrder = Effect.tryPromise({
+  try: async () => {
+    const res = await fetch("/api/trigger", { method: "POST" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return (await res.json()) as TriggerResponse;
+  },
+  catch: (cause) => new TriggerError({ cause: String(cause) }),
+});
 
 type Status =
   | { kind: "idle" }
@@ -87,47 +97,6 @@ function Home() {
   );
 }
 
-const rootRoute = createRootRoute({
-  component: () => (
-    <div
-      style={{
-        fontFamily: "system-ui, sans-serif",
-        maxWidth: 640,
-        margin: "4rem auto",
-        padding: "0 1rem",
-      }}
-    >
-      <header style={{ marginBottom: "2rem" }}>
-        <h1 style={{ margin: 0 }}>Order Trigger</h1>
-        <p style={{ color: "#666", marginTop: "0.25rem" }}>
-          Click the button to invoke the producer Lambda.
-        </p>
-      </header>
-      <Outlet />
-    </div>
-  ),
-});
-
-const indexRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/",
+export const Route = createFileRoute("/")({
   component: Home,
 });
-
-const routeTree = rootRoute.addChildren([indexRoute]);
-const router = createRouter({ routeTree });
-
-declare module "@tanstack/react-router" {
-  interface Register {
-    router: typeof router;
-  }
-}
-
-const rootEl = document.getElementById("root");
-if (!rootEl) throw new Error("root element not found");
-
-createRoot(rootEl).render(
-  <StrictMode>
-    <RouterProvider router={router} />
-  </StrictMode>,
-);

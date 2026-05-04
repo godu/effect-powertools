@@ -2,7 +2,6 @@ import { MetricUnit } from "@aws-lambda-powertools/metrics";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import * as Effect from "effect/Effect";
 import * as Metric from "effect/Metric";
-import { defineEventHandler, setResponseStatus } from "h3";
 
 import {
   counter,
@@ -10,20 +9,17 @@ import {
   gauge,
   histogram,
   timed,
-} from "../../../shared/effect-powertools";
-import {
-  ptLogger,
-  ptMetrics,
-  ptTracer,
-  runtime,
-} from "../../utils/observability";
+} from "../../../lambdas/shared/effect-powertools";
+import { ptMetrics, runtime } from "./observability";
 
 const PRODUCER_FUNCTION_NAME = process.env.PRODUCER_FUNCTION_NAME;
 if (!PRODUCER_FUNCTION_NAME) {
   throw new Error("PRODUCER_FUNCTION_NAME env var is required");
 }
 
-const lambda = ptTracer.captureAWSv3Client(new LambdaClient({}));
+// captureHTTPsRequests is patched in observability.ts; the SDK client's
+// outbound HTTPS calls become X-Ray subsegments automatically.
+const lambda = new LambdaClient({});
 
 const triggersReceived = counter("TriggersReceived", { unit: MetricUnit.Count });
 const triggerLatency = Metric.timer("TriggerLatency");
@@ -71,9 +67,7 @@ const invokeProducer = Effect.tryPromise({
       new InvokeCommand({
         FunctionName: PRODUCER_FUNCTION_NAME,
         InvocationType: "RequestResponse",
-        Payload: new TextEncoder().encode(
-          JSON.stringify({ source: "trigger" }),
-        ),
+        Payload: new TextEncoder().encode(JSON.stringify({ source: "trigger" })),
       }),
     ),
   catch: (error) => new InvokeError({ cause: String(error) }),
@@ -89,7 +83,7 @@ const invokeProducer = Effect.tryPromise({
   Metric.trackDuration(triggerLatency),
 );
 
-const trigger = timed(
+const triggerProgram = timed(
   "TriggerProcess",
   Effect.gen(function* () {
     yield* Effect.logDebug("trigger_request_received");
@@ -124,9 +118,7 @@ const trigger = timed(
     const parsed = yield* Effect.try({
       try: () => JSON.parse(payloadText) as ProducerResponse,
       catch: (error) =>
-        new InvokeError({
-          cause: `parse failed: ${String(error)}`,
-        }),
+        new InvokeError({ cause: `parse failed: ${String(error)}` }),
     });
 
     const shape = classifyShape(parsed.amountCents);
@@ -168,26 +160,24 @@ const sampleMemory = Effect.sync(() => process.memoryUsage().rss).pipe(
   Effect.flatMap((bytes) => Metric.update(memoryUsedBytes, bytes)),
 );
 
-export default defineEventHandler(async (event) => {
+export interface TriggerOutcome {
+  readonly status: number;
+  readonly body: ProducerResponse | { error: string };
+}
+
+export const handleTrigger = async (): Promise<TriggerOutcome> => {
   ptMetrics.captureColdStartMetric();
   ptMetrics.addDimension("environment", process.env.STAGE ?? "dev");
-
-  const lambdaContext = (event.context as { awsLambdaContext?: unknown })
-    .awsLambdaContext;
-  if (lambdaContext) {
-    ptLogger.addContext(lambdaContext as never);
-  }
 
   await runtime.runPromise(sampleMemory);
 
   try {
-    const exit = await runtime.runPromiseExit(trigger);
+    const exit = await runtime.runPromiseExit(triggerProgram);
     if (exit._tag === "Failure") {
-      setResponseStatus(event, 502);
-      return { error: "trigger_failed" };
+      return { status: 502, body: { error: "trigger_failed" } };
     }
-    return exit.value;
+    return { status: 200, body: exit.value };
   } finally {
     ptMetrics.publishStoredMetrics();
   }
-});
+};

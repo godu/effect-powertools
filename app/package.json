@@ -1,10 +1,11 @@
 {
-  "name": "cwobs-lambda-trigger",
-  "private": true,
+  "name": "cwobs-app",
   "version": "0.0.1",
+  "private": true,
   "type": "module",
   "scripts": {
-    "build": "nitro build",
+    "dev": "vite dev",
+    "build": "vite build",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -12,13 +13,20 @@
     "@aws-lambda-powertools/metrics": "^2.10.0",
     "@aws-lambda-powertools/tracer": "^2.10.0",
     "@aws-sdk/client-lambda": "^3.665.0",
-    "aws-xray-sdk-core": "^3.10.0",
+    "@tanstack/react-router": "latest",
+    "@tanstack/react-start": "latest",
     "effect": "3.21.2",
-    "nitropack": "^2.10.0"
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@types/aws-lambda": "^8.10.145",
     "@types/node": "^20.12.0",
-    "typescript": "^5.4.5"
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "nitro": "latest",
+    "typescript": "^5.4.5",
+    "vite": "^7.0.0"
   }
 }
