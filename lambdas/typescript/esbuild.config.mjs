@@ -8,7 +8,7 @@ await build({
   format: "cjs",
   outfile: "dist/handler.js",
   sourcemap: false,
-  minify: false,
+  minify: true,
   external: [
     "@aws-lambda-powertools/*",
     "@aws-sdk/*",

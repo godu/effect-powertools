@@ -71,7 +71,7 @@ function createProducerLambda(args: PipelineLambdaArgs): FnResult {
       runtime: aws.lambda.Runtime.Python3d12,
       architectures: ["arm64"],
       handler: "handler.handler",
-      memorySize: 256,
+      memorySize: 512,
       timeout: 10,
       code: new pulumi.asset.AssetArchive({
         "handler.py": new pulumi.asset.FileAsset(handlerPath),
@@ -129,7 +129,7 @@ function createConsumerLambda(args: PipelineLambdaArgs): FnResult {
       runtime: aws.lambda.Runtime.NodeJS24dX,
       architectures: ["arm64"],
       handler: "handler.handler",
-      memorySize: 256,
+      memorySize: 512,
       timeout: 10,
       code: new pulumi.asset.AssetArchive({
         "handler.js": new pulumi.asset.FileAsset(handlerPath),
