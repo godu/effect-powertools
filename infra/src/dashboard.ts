@@ -8,7 +8,6 @@ export interface DashboardArgs {
   region: string;
   producer: aws.lambda.Function;
   consumer: aws.lambda.Function;
-  observer: aws.lambda.Function;
   mainQueue: aws.sqs.Queue;
   dlq: aws.sqs.Queue;
   dataBucket: aws.s3.Bucket;
@@ -19,31 +18,21 @@ export function createDashboard(args: DashboardArgs): aws.cloudwatch.Dashboard {
     .all([
       args.producer.name,
       args.consumer.name,
-      args.observer.name,
       args.mainQueue.name,
       args.dlq.name,
       args.dataBucket.bucket,
     ])
-    .apply(
-      ([
-        producerName,
-        consumerName,
-        observerName,
-        mainQueueName,
-        dlqName,
-        bucket,
-      ]) =>
-        JSON.stringify(
-          buildDashboard({
-            region: args.region,
-            producerName,
-            consumerName,
-            observerName,
-            mainQueueName,
-            dlqName,
-            bucket,
-          }),
-        ),
+    .apply(([producerName, consumerName, mainQueueName, dlqName, bucket]) =>
+      JSON.stringify(
+        buildDashboard({
+          region: args.region,
+          producerName,
+          consumerName,
+          mainQueueName,
+          dlqName,
+          bucket,
+        }),
+      ),
     );
 
   return new aws.cloudwatch.Dashboard("dash", {
@@ -56,7 +45,6 @@ interface DashboardInputs {
   region: string;
   producerName: string;
   consumerName: string;
-  observerName: string;
   mainQueueName: string;
   dlqName: string;
   bucket: string;
@@ -79,56 +67,11 @@ function buildDashboard(d: DashboardInputs): unknown {
       ),
 
       header(0, 2, 24, 1, "## Lambda"),
-      lambdaInvocations(
-        0,
-        3,
-        8,
-        6,
-        d.region,
-        d.producerName,
-        d.consumerName,
-        d.observerName,
-      ),
-      lambdaDuration(
-        8,
-        3,
-        8,
-        6,
-        d.region,
-        d.producerName,
-        d.consumerName,
-        d.observerName,
-      ),
-      lambdaErrors(
-        16,
-        3,
-        8,
-        6,
-        d.region,
-        d.producerName,
-        d.consumerName,
-        d.observerName,
-      ),
-      lambdaConcurrent(
-        0,
-        9,
-        12,
-        6,
-        d.region,
-        d.producerName,
-        d.consumerName,
-        d.observerName,
-      ),
-      lambdaInsightsInit(
-        12,
-        9,
-        12,
-        6,
-        d.region,
-        d.producerName,
-        d.consumerName,
-        d.observerName,
-      ),
+      lambdaInvocations(0, 3, 8, 6, d.region, d.producerName, d.consumerName),
+      lambdaDuration(8, 3, 8, 6, d.region, d.producerName, d.consumerName),
+      lambdaErrors(16, 3, 8, 6, d.region, d.producerName, d.consumerName),
+      lambdaConcurrent(0, 9, 12, 6, d.region, d.producerName, d.consumerName),
+      lambdaInsightsInit(12, 9, 12, 6, d.region, d.producerName, d.consumerName),
 
       header(0, 15, 24, 1, "## SQS"),
       sqsDepth(0, 16, 8, 6, d.region, d.mainQueueName),
@@ -140,38 +83,11 @@ function buildDashboard(d: DashboardInputs): unknown {
       s3Errors(12, 23, 12, 6, d.region, d.bucket),
 
       header(0, 29, 24, 1, "## Powertools custom metrics"),
-      powertoolsCount(
-        0,
-        30,
-        12,
-        6,
-        d.region,
-        d.producerName,
-        d.consumerName,
-        d.observerName,
-      ),
-      powertoolsLatency(
-        12,
-        30,
-        12,
-        6,
-        d.region,
-        d.producerName,
-        d.consumerName,
-        d.observerName,
-      ),
+      powertoolsCount(0, 30, 12, 6, d.region, d.producerName, d.consumerName),
+      powertoolsLatency(12, 30, 12, 6, d.region, d.producerName, d.consumerName),
       powertoolsBytes(0, 36, 12, 6, d.region, d.producerName),
-      powertoolsAmount(12, 36, 12, 6, d.region, d.consumerName, d.observerName),
-      powertoolsColdStart(
-        0,
-        42,
-        24,
-        6,
-        d.region,
-        d.producerName,
-        d.consumerName,
-        d.observerName,
-      ),
+      powertoolsAmount(12, 36, 12, 6, d.region, d.consumerName),
+      powertoolsColdStart(0, 42, 24, 6, d.region, d.producerName, d.consumerName),
 
       header(0, 48, 24, 1, "## Trace map"),
       traceMapLink(0, 49, 24, 4, d.region),
@@ -227,12 +143,10 @@ function lambdaInvocations(
   region: string,
   producerName: string,
   consumerName: string,
-  observerName: string,
 ) {
   return metricWidget(x, y, w, h, region, "Invocations", [
     ["AWS/Lambda", "Invocations", "FunctionName", producerName],
     [".", ".", ".", consumerName],
-    [".", ".", ".", observerName],
   ]);
 }
 
@@ -244,7 +158,6 @@ function lambdaDuration(
   region: string,
   producerName: string,
   consumerName: string,
-  observerName: string,
 ) {
   return metricWidget(
     x,
@@ -256,7 +169,6 @@ function lambdaDuration(
     [
       ["AWS/Lambda", "Duration", "FunctionName", producerName],
       [".", ".", ".", consumerName],
-      [".", ".", ".", observerName],
     ],
     "p95",
   );
@@ -270,15 +182,12 @@ function lambdaErrors(
   region: string,
   producerName: string,
   consumerName: string,
-  observerName: string,
 ) {
   return metricWidget(x, y, w, h, region, "Errors + Throttles", [
     ["AWS/Lambda", "Errors", "FunctionName", producerName],
     [".", ".", ".", consumerName],
-    [".", ".", ".", observerName],
     ["AWS/Lambda", "Throttles", "FunctionName", producerName],
     [".", ".", ".", consumerName],
-    [".", ".", ".", observerName],
   ]);
 }
 
@@ -290,7 +199,6 @@ function lambdaConcurrent(
   region: string,
   producerName: string,
   consumerName: string,
-  observerName: string,
 ) {
   return metricWidget(
     x,
@@ -302,7 +210,6 @@ function lambdaConcurrent(
     [
       ["AWS/Lambda", "ConcurrentExecutions", "FunctionName", producerName],
       [".", ".", ".", consumerName],
-      [".", ".", ".", observerName],
     ],
     "Maximum",
   );
@@ -316,7 +223,6 @@ function lambdaInsightsInit(
   region: string,
   producerName: string,
   consumerName: string,
-  observerName: string,
 ) {
   return metricWidget(
     x,
@@ -328,7 +234,6 @@ function lambdaInsightsInit(
     [
       ["LambdaInsights", "init_duration", "function_name", producerName],
       [".", ".", ".", consumerName],
-      [".", ".", ".", observerName],
     ],
     "Average",
   );
@@ -456,13 +361,11 @@ function powertoolsCount(
   region: string,
   producerName: string,
   consumerName: string,
-  observerName: string,
 ) {
   return metricWidget(x, y, w, h, region, "Orders processed (count)", [
     [POWERTOOLS_NAMESPACE, "OrdersEmitted", "service", producerName],
     [".", "OrdersWritten", "service", consumerName],
     [".", "RecordsRejected", "service", consumerName],
-    [".", "OrdersObserved", "service", observerName],
   ]);
 }
 
@@ -474,7 +377,6 @@ function powertoolsLatency(
   region: string,
   producerName: string,
   consumerName: string,
-  observerName: string,
 ) {
   return metricWidget(
     x,
@@ -485,8 +387,7 @@ function powertoolsLatency(
     "Powertools work latency (ms)",
     [
       [POWERTOOLS_NAMESPACE, "EmitLatencyMs", "service", producerName],
-      [".", "WriteLatencyMs", "service", consumerName],
-      [".", "ObserveLatencyMs", "service", observerName],
+      [".", "WriteLatency", "service", consumerName],
     ],
     "Average",
   );
@@ -519,7 +420,6 @@ function powertoolsAmount(
   h: number,
   region: string,
   consumerName: string,
-  observerName: string,
 ) {
   return metricWidget(
     x,
@@ -528,10 +428,7 @@ function powertoolsAmount(
     h,
     region,
     "Order amount (cents)",
-    [
-      [POWERTOOLS_NAMESPACE, "OrderAmountCents", "service", consumerName],
-      [".", ".", ".", observerName],
-    ],
+    [[POWERTOOLS_NAMESPACE, "OrderAmountCents", "service", consumerName]],
     "Sum",
   );
 }
@@ -544,12 +441,10 @@ function powertoolsColdStart(
   region: string,
   producerName: string,
   consumerName: string,
-  observerName: string,
 ) {
   return metricWidget(x, y, w, h, region, "Powertools ColdStart", [
     [POWERTOOLS_NAMESPACE, "ColdStart", "service", producerName],
     [".", ".", ".", consumerName],
-    [".", ".", ".", observerName],
   ]);
 }
 

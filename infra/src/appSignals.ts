@@ -5,7 +5,6 @@ export interface SloArgs {
   namePrefix: string;
   producerName: pulumi.Input<string>;
   consumerName: pulumi.Input<string>;
-  observerName: pulumi.Input<string>;
   tags: Record<string, string>;
 }
 
@@ -33,7 +32,6 @@ export function createSlos(
   for (const [role, fnName] of [
     ["producer", args.producerName],
     ["consumer", args.consumerName],
-    ["observer", args.observerName],
   ] as const) {
     slos.push(
       latencySlo(

@@ -19,23 +19,18 @@ export interface PipelineLambdaArgs {
 export interface PipelineLambdas {
   producer: aws.lambda.Function;
   consumer: aws.lambda.Function;
-  observer: aws.lambda.Function;
   producerLogGroup: aws.cloudwatch.LogGroup;
   consumerLogGroup: aws.cloudwatch.LogGroup;
-  observerLogGroup: aws.cloudwatch.LogGroup;
 }
 
 export function createLambdas(args: PipelineLambdaArgs): PipelineLambdas {
   const producer = createProducerLambda(args);
   const consumer = createConsumerLambda(args);
-  const observer = createObserverLambda(args);
   return {
     producer: producer.fn,
     consumer: consumer.fn,
-    observer: observer.fn,
     producerLogGroup: producer.logGroup,
     consumerLogGroup: consumer.logGroup,
-    observerLogGroup: observer.logGroup,
   };
 }
 
@@ -166,85 +161,6 @@ function createConsumerLambda(args: PipelineLambdaArgs): FnResult {
   return { fn, logGroup };
 }
 
-function createObserverLambda(args: PipelineLambdaArgs): FnResult {
-  const role = createObserverRole({
-    namePrefix: args.namePrefix,
-    bucketArn: args.dataBucket.arn,
-    bucketPrefix: "orders/",
-    tags: args.tags,
-  });
-
-  const fnName = `${args.namePrefix}-observer`;
-  const logGroup = new aws.cloudwatch.LogGroup("observer-log", {
-    name: `/aws/lambda/${fnName}`,
-    retentionInDays: 7,
-    tags: args.tags,
-  });
-
-  const handlerPath = path.join(
-    __dirname,
-    "..",
-    "..",
-    "lambdas",
-    "typescript-s3",
-    "dist",
-    "handler.js",
-  );
-
-  const fn = new aws.lambda.Function(
-    "observer",
-    {
-      name: fnName,
-      role: role.arn,
-      runtime: aws.lambda.Runtime.NodeJS20dX,
-      architectures: ["arm64"],
-      handler: "handler.handler",
-      memorySize: 256,
-      timeout: 10,
-      code: new pulumi.asset.AssetArchive({
-        "handler.js": new pulumi.asset.FileAsset(handlerPath),
-      }),
-      layers: [powertoolsTypescriptLayerArn, lambdaInsightsArmArn],
-      tracingConfig: { mode: "Active" },
-      environment: {
-        variables: {
-          DATA_BUCKET: args.dataBucket.bucket,
-          POWERTOOLS_SERVICE_NAME: fnName,
-          POWERTOOLS_METRICS_NAMESPACE: POWERTOOLS_NAMESPACE,
-          POWERTOOLS_LOG_LEVEL: "INFO",
-          POWERTOOLS_LOGGER_LOG_EVENT: "false",
-        },
-      },
-      tags: args.tags,
-    },
-    { dependsOn: [logGroup] },
-  );
-
-  const permission = new aws.lambda.Permission("observer-s3-invoke", {
-    action: "lambda:InvokeFunction",
-    function: fn.name,
-    principal: "s3.amazonaws.com",
-    sourceArn: args.dataBucket.arn,
-  });
-
-  new aws.s3.BucketNotification(
-    "data-notify",
-    {
-      bucket: args.dataBucket.id,
-      lambdaFunctions: [
-        {
-          lambdaFunctionArn: fn.arn,
-          events: ["s3:ObjectCreated:*"],
-          filterPrefix: "orders/",
-        },
-      ],
-    },
-    { dependsOn: [permission] },
-  );
-
-  return { fn, logGroup };
-}
-
 interface ProducerRoleArgs {
   namePrefix: string;
   queueArn: pulumi.Output<string>;
@@ -322,41 +238,6 @@ function createConsumerRole(args: ConsumerRoleArgs): aws.iam.Role {
           ],
         }),
       ),
-  });
-
-  return role;
-}
-
-interface ObserverRoleArgs {
-  namePrefix: string;
-  bucketArn: pulumi.Output<string>;
-  bucketPrefix: string;
-  tags: Record<string, string>;
-}
-
-function createObserverRole(args: ObserverRoleArgs): aws.iam.Role {
-  const role = new aws.iam.Role("observer-role", {
-    name: `${args.namePrefix}-observer-role`,
-    assumeRolePolicy: assumeLambda,
-    tags: args.tags,
-  });
-
-  attachManagedPolicies(role, "observer");
-
-  new aws.iam.RolePolicy("observer-inline", {
-    role: role.id,
-    policy: args.bucketArn.apply((bucketArn) =>
-      JSON.stringify({
-        Version: "2012-10-17",
-        Statement: [
-          {
-            Effect: "Allow",
-            Action: ["s3:GetObject"],
-            Resource: `${bucketArn}/${args.bucketPrefix}*`,
-          },
-        ],
-      }),
-    ),
   });
 
   return role;
