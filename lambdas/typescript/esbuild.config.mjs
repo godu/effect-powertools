@@ -1,8 +1,4 @@
 import { build } from "esbuild";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 await build({
   entryPoints: ["src/handler.ts"],
@@ -18,6 +14,5 @@ await build({
     "@aws-sdk/*",
     "aws-xray-sdk-core",
   ],
-  nodePaths: [path.join(__dirname, "node_modules")],
   logLevel: "info",
 });

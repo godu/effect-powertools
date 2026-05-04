@@ -1,0 +1,16 @@
+{
+  "name": "cwobs-effect-powertools-bridge",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Effect ↔ AWS Lambda Powertools bridge — logger, tracer, metrics. Consumed via relative path by sibling Lambda packages.",
+  "main": "index.ts",
+  "types": "index.ts",
+  "peerDependencies": {
+    "@aws-lambda-powertools/logger": "^2.10.0",
+    "@aws-lambda-powertools/metrics": "^2.10.0",
+    "@aws-lambda-powertools/tracer": "^2.10.0",
+    "aws-xray-sdk-core": "^3.10.0",
+    "effect": "3.21.2"
+  }
+}

@@ -19,6 +19,6 @@ export const runtime = ManagedRuntime.make(
 
 if (typeof process !== "undefined" && typeof process.on === "function") {
   process.on("SIGTERM", () => {
-    runtime.dispose().finally(() => process.exit(0));
+    void runtime.dispose();
   });
 }

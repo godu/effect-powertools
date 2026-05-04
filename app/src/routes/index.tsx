@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import { useState } from "react";
 
@@ -36,7 +37,7 @@ function Home() {
       if (exit._tag === "Success") {
         setStatus({ kind: "success", order: exit.value });
       } else {
-        setStatus({ kind: "error", message: String(exit.cause) });
+        setStatus({ kind: "error", message: Cause.pretty(exit.cause) });
       }
     });
   };

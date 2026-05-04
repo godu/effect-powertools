@@ -1,5 +1,9 @@
 import { MetricUnit } from "@aws-lambda-powertools/metrics";
-import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
+import {
+  InvokeCommand,
+  type InvokeCommandOutput,
+  LambdaClient,
+} from "@aws-sdk/client-lambda";
 import * as Effect from "effect/Effect";
 import * as Metric from "effect/Metric";
 
@@ -61,17 +65,45 @@ const classifyShape = (amount: number | undefined): string => {
   return "normal";
 };
 
-const invokeProducer = Effect.tryPromise({
-  try: () =>
-    lambda.send(
-      new InvokeCommand({
-        FunctionName: PRODUCER_FUNCTION_NAME,
-        InvocationType: "RequestResponse",
-        Payload: new TextEncoder().encode(JSON.stringify({ source: "trigger" })),
-      }),
-    ),
-  catch: (error) => new InvokeError({ cause: String(error) }),
-}).pipe(
+// Throttling is recoverable from the caller's POV — surface it as a typed
+// failure so the bridge sets the X-Ray *error* flag (orange). Anything else
+// (5xx, network, timeout) is operational — surface it as a defect so the
+// bridge sets the *fault* flag (red), which is what oncall actually pages on.
+const THROTTLING_ERROR_NAMES = new Set([
+  "ThrottlingException",
+  "Throttling",
+  "RequestThrottled",
+  "TooManyRequestsException",
+]);
+
+const isThrottling = (error: unknown): boolean => {
+  if (typeof error !== "object" || error === null) return false;
+  const name = (error as { name?: string }).name;
+  return name !== undefined && THROTTLING_ERROR_NAMES.has(name);
+};
+
+const invokeProducer = Effect.async<InvokeCommandOutput, InvokeError>(
+  (resume) => {
+    lambda
+      .send(
+        new InvokeCommand({
+          FunctionName: PRODUCER_FUNCTION_NAME,
+          InvocationType: "RequestResponse",
+          Payload: new TextEncoder().encode(
+            JSON.stringify({ source: "trigger" }),
+          ),
+        }),
+      )
+      .then((output) => resume(Effect.succeed(output)))
+      .catch((error: unknown) => {
+        if (isThrottling(error)) {
+          resume(Effect.fail(new InvokeError({ cause: String(error) })));
+        } else {
+          resume(Effect.die(error));
+        }
+      });
+  },
+).pipe(
   Effect.withSpan("lambda.invoke", {
     attributes: {
       "rpc.system": "aws-api",

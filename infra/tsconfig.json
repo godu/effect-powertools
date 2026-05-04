@@ -20,6 +20,7 @@
     "src/queues.ts",
     "src/lambdas.ts",
     "src/app.ts",
+    "src/static.ts",
     "src/appSignals.ts",
     "src/appInsights.ts",
     "src/alarms.ts",

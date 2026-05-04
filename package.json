@@ -1,0 +1,12 @@
+{
+  "name": "effect-aws-opentelemetry",
+  "version": "0.0.1",
+  "private": true,
+  "description": "End-to-end CloudWatch observability demo: TanStack Start app → Py producer → SQS → TS/Effect consumer → S3.",
+  "workspaces": [
+    "app",
+    "infra",
+    "lambdas/typescript",
+    "lambdas/shared/effect-powertools"
+  ]
+}

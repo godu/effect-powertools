@@ -4,6 +4,7 @@ import { createDataBucket } from "./src/bucket";
 import { createQueue } from "./src/queues";
 import { createLambdas } from "./src/lambdas";
 import { createApp } from "./src/app";
+import { createStaticBucket } from "./src/static";
 import { enableApplicationSignals, createSlos } from "./src/appSignals";
 import { createAppInsights } from "./src/appInsights";
 import { createAlarms } from "./src/alarms";
@@ -31,9 +32,14 @@ const { producer, consumer } = createLambdas({
   tags,
 });
 
-// Single TanStack Start Lambda (SSR + /api/trigger + static assets)
-// fronted by CloudFront. Replaces the prior split frontend/trigger pair.
+// Single TanStack Start Lambda (SSR + /api/trigger) fronted by CloudFront.
+// Static client assets sit on S3 and are served via CloudFront /assets/*.
 const app = createApp({ namePrefix, producerLambda: producer, tags });
+const staticAssets = createStaticBucket({
+  namePrefix,
+  appFunctionUrl: app.functionUrl,
+  tags,
+});
 
 // Observability plane
 const discovery = enableApplicationSignals();
@@ -80,6 +86,6 @@ export const producerName = producer.name;
 export const consumerName = consumer.name;
 export const triggerName = app.fn.name;
 export const triggerFunctionUrl = app.functionUrl.functionUrl;
-export const frontendUrl = pulumi.interpolate`https://${app.distribution.domainName}`;
+export const frontendUrl = pulumi.interpolate`https://${staticAssets.distribution.domainName}`;
 export const dashboardUrl = pulumi.interpolate`https://${REGION}.console.aws.amazon.com/cloudwatch/home?region=${REGION}#dashboards:name=${dashboard.dashboardName}`;
 export const traceMapUrl = `https://${REGION}.console.aws.amazon.com/cloudwatch/home?region=${REGION}#xray:service-map/map`;
