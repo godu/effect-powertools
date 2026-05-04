@@ -43,7 +43,20 @@ function Home() {
   };
 
   return (
-    <div>
+    <div
+      style={{
+        fontFamily: "system-ui, sans-serif",
+        maxWidth: 640,
+        margin: "4rem auto",
+        padding: "0 1rem",
+      }}
+    >
+      <header style={{ marginBottom: "2rem" }}>
+        <h1 style={{ margin: 0 }}>Order Trigger</h1>
+        <p style={{ color: "#666", marginTop: "0.25rem" }}>
+          Click the button to invoke the producer Lambda.
+        </p>
+      </header>
       <button
         type="button"
         onClick={handleClick}
