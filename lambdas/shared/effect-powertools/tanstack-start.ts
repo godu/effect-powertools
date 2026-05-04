@@ -104,18 +104,18 @@ type XRayHttp = {
 };
 
 const setHttpRequest = (
-  sub: Subsegment,
+  segment: Segment | Subsegment,
   request: Request,
   pathname: string,
 ): void => {
-  const url = new URL(request.url);
+  const search = new URL(request.url).search;
   const xff = request.headers.get("x-forwarded-for");
-  const target = sub as unknown as { http?: XRayHttp };
+  const target = segment as unknown as { http?: XRayHttp };
   target.http = {
     ...target.http,
     request: {
       method: request.method,
-      url: `${url.protocol}//${url.host}${pathname}${url.search}`,
+      url: `${pathname}${search}`,
       user_agent: request.headers.get("user-agent") ?? undefined,
       client_ip: xff?.split(",")[0]?.trim() ?? undefined,
       x_forwarded_for: xff !== null,
@@ -124,11 +124,11 @@ const setHttpRequest = (
 };
 
 const setHttpResponseStatus = (
-  sub: Subsegment,
+  segment: Segment | Subsegment,
   status: number,
   contentLength: number | undefined,
 ): void => {
-  const target = sub as unknown as { http?: XRayHttp };
+  const target = segment as unknown as { http?: XRayHttp };
   target.http = {
     ...target.http,
     response: {
@@ -229,6 +229,7 @@ export const observabilityServerFn = (opts: ObservabilityOptions = {}) =>
         let sub: Subsegment | undefined;
         if (tracingEnabled) {
           parent = ptTracer.getSegment();
+          if (parent) setHttpRequest(parent, request, pathname);
           sub = parent?.addNewSubsegment(`## ${name}`);
           if (sub) {
             ptTracer.setSegment(sub);
@@ -276,12 +277,13 @@ export const observabilityServerFn = (opts: ObservabilityOptions = {}) =>
           const ptMetrics = yield* PowertoolsMetricsService;
 
           if (Exit.isSuccess(exit)) {
+            const status = exit.value.response.status;
+            const contentLength = parseContentLength(exit.value.response);
+            if (setup.parent) {
+              setHttpResponseStatus(setup.parent, status, contentLength);
+            }
             if (setup.sub) {
-              setHttpResponseStatus(
-                setup.sub,
-                exit.value.response.status,
-                parseContentLength(exit.value.response),
-              );
+              setHttpResponseStatus(setup.sub, status, contentLength);
             }
             if (setup.tracingEnabled) {
               ptTracer.addResponseAsMetadata(
@@ -293,6 +295,7 @@ export const observabilityServerFn = (opts: ObservabilityOptions = {}) =>
               );
             }
           } else {
+            if (setup.parent) setHttpResponseStatus(setup.parent, 500, undefined);
             if (setup.sub) setHttpResponseStatus(setup.sub, 500, undefined);
             if (setup.tracingEnabled) {
               const failure = Cause.failureOption(exit.cause);
