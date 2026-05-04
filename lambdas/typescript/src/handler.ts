@@ -1,11 +1,9 @@
+import { Logger as PowertoolsLogger } from "@aws-lambda-powertools/logger";
 import {
-  BatchProcessor,
-  EventType,
-  processPartialResponse,
-} from "@aws-lambda-powertools/batch";
-import { Logger } from "@aws-lambda-powertools/logger";
-import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
-import { Tracer } from "@aws-lambda-powertools/tracer";
+  Metrics as PowertoolsMetricsCtor,
+  MetricUnit,
+} from "@aws-lambda-powertools/metrics";
+import { Tracer as PowertoolsTracer } from "@aws-lambda-powertools/tracer";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import type {
   Context,
@@ -13,80 +11,139 @@ import type {
   SQSEvent,
   SQSRecord,
 } from "aws-lambda";
+import * as Effect from "effect/Effect";
+import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Metric from "effect/Metric";
 
-const logger = new Logger();
-const tracer = new Tracer();
-const metrics = new Metrics();
+import { counter, PowertoolsLayer } from "../../shared/effect-powertools";
 
-const s3 = tracer.captureAWSv3Client(new S3Client({}));
+const ptLogger = new PowertoolsLogger();
+const ptTracer = new PowertoolsTracer();
+const ptMetrics = new PowertoolsMetricsCtor();
+
+const s3 = ptTracer.captureAWSv3Client(new S3Client({}));
+
 const BUCKET = process.env.DATA_BUCKET;
 if (!BUCKET) throw new Error("DATA_BUCKET env var is required");
 
-const processor = new BatchProcessor(EventType.SQS);
+const runtime = ManagedRuntime.make(
+  PowertoolsLayer({ logger: ptLogger, tracer: ptTracer, metrics: ptMetrics }),
+);
+process.on("SIGTERM", () => {
+  runtime.dispose().finally(() => process.exit(0));
+});
+
+const ordersWritten = counter("OrdersWritten", { unit: MetricUnit.Count });
+const orderAmountCents = counter("OrderAmountCents", { unit: MetricUnit.Count });
+const writeLatency = Metric.timer("WriteLatency");
+const recordsRejected = counter("RecordsRejected", { unit: MetricUnit.Count });
 
 interface Order {
-  orderId: string;
-  customerId: string;
-  amountCents: number;
-  createdAt: string;
+  readonly orderId: string;
+  readonly customerId: string;
+  readonly amountCents: number;
+  readonly createdAt: string;
 }
 
-const writeOne = async (record: SQSRecord): Promise<void> => {
-  const parent = tracer.getSegment();
-  const subsegment = parent?.addNewSubsegment("writeOne");
-  if (subsegment) tracer.setSegment(subsegment);
+class PoisonOrderError {
+  readonly _tag = "PoisonOrderError";
+  constructor(
+    readonly props: {
+      readonly orderId: string;
+      readonly amountCents: number;
+    },
+  ) {}
+  toString() {
+    return `PoisonOrderError(${this.props.orderId}): amountCents=${this.props.amountCents}`;
+  }
+}
 
-  try {
+class PutObjectError {
+  readonly _tag = "PutObjectError";
+  constructor(
+    readonly props: {
+      readonly orderId: string;
+      readonly cause: string;
+    },
+  ) {}
+  toString() {
+    return `PutObjectError(${this.props.orderId}): ${this.props.cause}`;
+  }
+}
+
+const writeOne = (record: SQSRecord) =>
+  Effect.gen(function* () {
     const order = JSON.parse(record.body) as Order;
 
-    logger.info("order_received", {
-      orderId: order.orderId,
-      messageId: record.messageId,
-    });
-    tracer.putAnnotation("orderId", order.orderId);
-    tracer.putMetadata("order", order);
-
-    if (order.amountCents < 0) {
-      metrics.addMetric("RecordsRejected", MetricUnit.Count, 1);
-      logger.error("poison_rejected", {
+    yield* Effect.annotateCurrentSpan("orderId", order.orderId);
+    yield* Effect.logInfo("order_received").pipe(
+      Effect.annotateLogs({
         orderId: order.orderId,
-        amountCents: order.amountCents,
-      });
-      throw new Error("poison: negative amount");
-    }
-
-    const started = Date.now();
-    await s3.send(
-      new PutObjectCommand({
-        Bucket: BUCKET,
-        Key: `orders/${order.orderId}.json`,
-        Body: record.body,
-        ContentType: "application/json",
+        messageId: record.messageId,
       }),
     );
-    const elapsedMs = Date.now() - started;
 
-    metrics.addMetric("OrdersWritten", MetricUnit.Count, 1);
-    metrics.addMetric("OrderAmountCents", MetricUnit.Count, order.amountCents);
-    metrics.addMetric("WriteLatencyMs", MetricUnit.Milliseconds, elapsedMs);
-    logger.info("order_written", { orderId: order.orderId, elapsedMs });
-  } finally {
-    subsegment?.close();
-    if (parent) tracer.setSegment(parent);
-  }
-};
+    if (order.amountCents < 0) {
+      yield* Metric.update(recordsRejected, 1);
+      yield* Effect.logError("poison_rejected").pipe(
+        Effect.annotateLogs({
+          orderId: order.orderId,
+          amountCents: order.amountCents,
+        }),
+      );
+      return yield* Effect.fail(
+        new PoisonOrderError({
+          orderId: order.orderId,
+          amountCents: order.amountCents,
+        }),
+      );
+    }
+
+    yield* Effect.tryPromise({
+      try: () =>
+        s3.send(
+          new PutObjectCommand({
+            Bucket: BUCKET,
+            Key: `orders/${order.orderId}.json`,
+            Body: record.body,
+            ContentType: "application/json",
+          }),
+        ),
+      catch: (error) =>
+        new PutObjectError({ orderId: order.orderId, cause: String(error) }),
+    }).pipe(Metric.trackDuration(writeLatency));
+
+    yield* Metric.update(ordersWritten, 1);
+    yield* Metric.update(orderAmountCents, order.amountCents);
+
+    yield* Effect.logInfo("order_written").pipe(
+      Effect.annotateLogs({ orderId: order.orderId }),
+    );
+  }).pipe(
+    Effect.withSpan("writeOne", {
+      attributes: { messageId: record.messageId },
+    }),
+  );
 
 export const handler = async (
   event: SQSEvent,
   context: Context,
 ): Promise<SQSBatchResponse> => {
-  metrics.captureColdStartMetric();
-  logger.addContext(context);
+  ptMetrics.captureColdStartMetric();
+  ptLogger.addContext(context);
+
+  const batchItemFailures: { itemIdentifier: string }[] = [];
+
   try {
-    return await processPartialResponse(event, writeOne, processor, {
-      context,
-    });
+    for (const record of event.Records) {
+      const result = await runtime.runPromiseExit(writeOne(record));
+      if (result._tag === "Failure") {
+        batchItemFailures.push({ itemIdentifier: record.messageId });
+      }
+    }
   } finally {
-    metrics.publishStoredMetrics();
+    ptMetrics.publishStoredMetrics();
   }
+
+  return { batchItemFailures };
 };

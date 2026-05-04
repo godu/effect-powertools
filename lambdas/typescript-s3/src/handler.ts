@@ -14,7 +14,7 @@ import {
   counter,
   histogram,
   PowertoolsLayer,
-} from "./effect-powertools";
+} from "../../shared/effect-powertools";
 
 const ptLogger = new PowertoolsLogger();
 const ptTracer = new PowertoolsTracer();

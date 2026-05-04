@@ -7,7 +7,14 @@
     "strict": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "outDir": "dist"
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "effect": ["./node_modules/effect"],
+      "effect/*": ["./node_modules/effect/*"],
+      "@aws-lambda-powertools/*": ["./node_modules/@aws-lambda-powertools/*"],
+      "aws-xray-sdk-core": ["./node_modules/aws-xray-sdk-core"]
+    }
   },
-  "include": ["src"]
+  "include": ["src", "../shared/effect-powertools"]
 }
