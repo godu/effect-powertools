@@ -10,7 +10,7 @@ import {
   PowertoolsMetricsService,
   PowertoolsTracerLayer,
   PowertoolsTracerService,
-} from "../../../lambdas/shared/effect-powertools";
+} from "effect-powertools";
 
 // captureHTTPsRequests patches node:http and node:https globally so every
 // outbound HTTP(S) request becomes an X-Ray subsegment under whichever

@@ -9,5 +9,5 @@
     "forceConsistentCasingInFileNames": true,
     "noEmit": true
   },
-  "include": ["src", "../shared/effect-powertools"]
+  "include": ["src"]
 }

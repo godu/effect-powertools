@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import * as Cause from "effect/Cause";
 
-import { requireRuntime } from "../../../../lambdas/shared/effect-powertools/tanstack-start";
+import { requireRuntime } from "effect-powertools/tanstack-start";
 import { triggerProgram } from "../../server/trigger";
 
 export const Route = createFileRoute("/api/trigger")({

@@ -22,7 +22,7 @@ import {
   histogram,
   PowertoolsLayer,
   timed,
-} from "../../shared/effect-powertools";
+} from "effect-powertools";
 
 const ptLogger = new PowertoolsLogger();
 const ptTracer = new PowertoolsTracer();

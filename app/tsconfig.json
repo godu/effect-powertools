@@ -11,5 +11,5 @@
     "resolveJsonModule": true,
     "noEmit": true
   },
-  "include": ["src", "vite.config.ts", "../lambdas/shared/effect-powertools"]
+  "include": ["src", "vite.config.ts"]
 }

@@ -9,7 +9,7 @@ import {
   gauge,
   histogram,
   timed,
-} from "../../../lambdas/shared/effect-powertools";
+} from "effect-powertools";
 
 const PRODUCER_FUNCTION_NAME = process.env.PRODUCER_FUNCTION_NAME;
 if (!PRODUCER_FUNCTION_NAME) {
