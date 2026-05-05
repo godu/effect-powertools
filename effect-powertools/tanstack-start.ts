@@ -28,32 +28,19 @@ import * as Option from "effect/Option";
 import * as Tracer from "effect/Tracer";
 
 import { PowertoolsMetricsService } from "./metrics";
+import {
+  registerSigtermDisposer,
+  wrapRuntimeWithParentSpan,
+} from "./runtime-utils";
 import { PowertoolsTracerService, stripXrayTraceIdPrefix } from "./tracer";
 
 // =============================================================================
 // runtimeServerFn — build a ManagedRuntime once and inject into ctx.context.
 // =============================================================================
 
-// Tracks runtimes whose SIGTERM disposer we've already registered, so calling
-// `runtimeServerFn()` more than once doesn't leak listeners.
-const registeredDisposers = new WeakSet<ManagedRuntime.ManagedRuntime<unknown, unknown>>();
-
 export const runtimeServerFn = <A, E>(layer: Layer.Layer<A, E>) => {
   const runtime = ManagedRuntime.make(layer);
-  if (
-    !registeredDisposers.has(
-      runtime as ManagedRuntime.ManagedRuntime<unknown, unknown>,
-    ) &&
-    typeof process !== "undefined" &&
-    typeof process.on === "function"
-  ) {
-    registeredDisposers.add(
-      runtime as ManagedRuntime.ManagedRuntime<unknown, unknown>,
-    );
-    process.on("SIGTERM", () => {
-      void runtime.dispose();
-    });
-  }
+  registerSigtermDisposer(runtime);
   return async <TR, TM>(options: RequestServerOptions<TR, TM>) =>
     options.next({ context: { runtime } });
 };
@@ -149,41 +136,6 @@ const parseContentLength = (response: Response): number | undefined => {
   if (cl === null) return undefined;
   const n = Number.parseInt(cl, 10);
   return Number.isFinite(n) ? n : undefined;
-};
-
-// Wrap a ManagedRuntime so every `run*` method auto-applies
-// `Layer.parentSpan(span)`. Equivalent in spirit to
-// `Runtime.updateContext(Context.add(Tracer.ParentSpan, span))`, but applied
-// per-call so we don't need to await the lazy underlying Runtime synchronously.
-const wrapRuntimeWithParentSpan = <R, E>(
-  rt: ManagedRuntime.ManagedRuntime<R, E>,
-  span: Tracer.AnySpan,
-): ManagedRuntime.ManagedRuntime<R, E> => {
-  const parentLayer = Layer.parentSpan(span);
-  const provide = <A, EE>(eff: Effect.Effect<A, EE, R>) =>
-    Effect.provide(eff, parentLayer);
-  return new Proxy(rt, {
-    get(target, prop, receiver) {
-      switch (prop) {
-        case "runPromise":
-        case "runPromiseExit":
-        case "runFork":
-        case "runSync":
-        case "runSyncExit":
-        case "runCallback": {
-          const fn = Reflect.get(target, prop, receiver) as (
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            ...args: any[]
-          ) => unknown;
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          return (eff: Effect.Effect<any, any, R>, ...rest: any[]) =>
-            fn.call(target, provide(eff), ...rest);
-        }
-        default:
-          return Reflect.get(target, prop, receiver);
-      }
-    },
-  });
 };
 
 interface SetupResult {

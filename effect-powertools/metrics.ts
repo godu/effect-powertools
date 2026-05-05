@@ -103,8 +103,8 @@ const patchGlobalMetricRegistry = (metrics: PowertoolsMetrics): void => {
   const registry = Metric.globalMetricRegistry as unknown as {
     get(key: MetricKey.MetricKey.Untyped): UntypedHook;
   };
-  originalGet = registry.get.bind(registry);
-  const captured = originalGet;
+  const captured = registry.get.bind(registry);
+  originalGet = captured;
   registry.get = function patchedGet(key) {
     const inner = captured(key);
     return wrapHook(metrics, key, inner);

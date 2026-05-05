@@ -57,8 +57,7 @@ function createProducerLambda(args: PipelineLambdaArgs): FnResult {
     __dirname,
     "..",
     "..",
-    "lambdas",
-    "python",
+    "producer",
     "src",
     "handler.py",
   );
@@ -115,8 +114,7 @@ function createConsumerLambda(args: PipelineLambdaArgs): FnResult {
     __dirname,
     "..",
     "..",
-    "lambdas",
-    "typescript",
+    "consumer",
     "dist",
     "handler.mjs",
   );

@@ -5,19 +5,14 @@ import {
 } from "@aws-lambda-powertools/metrics";
 import { Tracer as PowertoolsTracer } from "@aws-lambda-powertools/tracer";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import type {
-  Context,
-  SQSBatchResponse,
-  SQSEvent,
-  SQSRecord,
-} from "aws-lambda";
+import type { SQSRecord } from "aws-lambda";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
-import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Metric from "effect/Metric";
+import * as Schema from "effect/Schema";
 
 import {
   counter,
+  createSqsHandler,
   frequency,
   gauge,
   histogram,
@@ -34,12 +29,14 @@ const s3 = ptTracer.captureAWSv3Client(new S3Client({}));
 const BUCKET = process.env.DATA_BUCKET;
 if (!BUCKET) throw new Error("DATA_BUCKET env var is required");
 
-const runtime = ManagedRuntime.make(
-  PowertoolsLayer({ logger: ptLogger, tracer: ptTracer, metrics: ptMetrics }),
-);
-process.on("SIGTERM", () => {
-  runtime.dispose().finally(() => process.exit(0));
+const Order = Schema.Struct({
+  orderId: Schema.String,
+  customerId: Schema.String,
+  amountCents: Schema.Number,
+  createdAt: Schema.String,
 });
+type Order = typeof Order.Type;
+const OrderFromBody = Schema.parseJson(Order);
 
 const ordersWritten = counter("OrdersWritten", { unit: MetricUnit.Count });
 const orderAmountCents = counter("OrderAmountCents", { unit: MetricUnit.Count });
@@ -52,13 +49,6 @@ const writeLatency = Metric.timer("WriteLatency");
 const recordsRejected = counter("RecordsRejected", { unit: MetricUnit.Count });
 const memoryUsedBytes = gauge("MemoryUsedBytes", { unit: MetricUnit.Bytes });
 const orderShapeFreq = frequency("OrderShape");
-
-interface Order {
-  readonly orderId: string;
-  readonly customerId: string;
-  readonly amountCents: number;
-  readonly createdAt: string;
-}
 
 class PoisonOrderError {
   readonly _tag = "PoisonOrderError";
@@ -83,16 +73,6 @@ class PutObjectError {
   ) {}
   toString() {
     return `PutObjectError(${this.props.orderId}): ${this.props.cause}`;
-  }
-}
-
-class ParseOrderError {
-  readonly _tag = "ParseOrderError";
-  constructor(
-    readonly props: { readonly messageId: string; readonly cause: string },
-  ) {}
-  toString() {
-    return `ParseOrderError(${this.props.messageId}): ${this.props.cause}`;
   }
 }
 
@@ -125,22 +105,13 @@ const putToS3 = (order: Order, body: string) =>
     Metric.trackDuration(writeLatency),
   );
 
-const writeOne = (record: SQSRecord) =>
+const writeOne = (order: Order, record: SQSRecord) =>
   timed(
     "OrderProcess",
     Effect.gen(function* () {
       yield* Effect.logDebug("record_received").pipe(
         Effect.annotateLogs({ messageId: record.messageId }),
       );
-
-      const order = yield* Effect.try({
-        try: () => JSON.parse(record.body) as Order,
-        catch: (error) =>
-          new ParseOrderError({
-            messageId: record.messageId,
-            cause: String(error),
-          }),
-      });
 
       const shape = classifyShape(order.amountCents);
 
@@ -213,29 +184,17 @@ const sampleMemory = Effect.sync(() => process.memoryUsage().rss).pipe(
   Effect.flatMap((bytes) => Metric.update(memoryUsedBytes, bytes)),
 );
 
-export const handler = async (
-  event: SQSEvent,
-  context: Context,
-): Promise<SQSBatchResponse> => {
-  ptMetrics.captureColdStartMetric();
-  ptMetrics.addDimension("environment", process.env.STAGE ?? "dev");
-  ptLogger.addContext(context);
-
-  await runtime.runPromise(sampleMemory);
-
-  try {
-    const exits = await runtime.runPromise(
-      Effect.forEach(event.Records, (record) => Effect.exit(writeOne(record)), {
-        concurrency: "unbounded",
-      }),
-    );
-    const batchItemFailures = exits.flatMap((exit, i) =>
-      Exit.isFailure(exit)
-        ? [{ itemIdentifier: event.Records[i].messageId }]
-        : [],
-    );
-    return { batchItemFailures };
-  } finally {
-    ptMetrics.publishStoredMetrics();
-  }
-};
+export const handler = createSqsHandler(
+  {
+    layer: PowertoolsLayer({
+      logger: ptLogger,
+      tracer: ptTracer,
+      metrics: ptMetrics,
+    }),
+    recordSchema: OrderFromBody,
+    serviceName: "orders",
+    concurrency: "unbounded",
+    beforeBatch: sampleMemory,
+  },
+  (order, record) => writeOne(order, record),
+);

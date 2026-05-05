@@ -39,7 +39,10 @@ interface BridgeSpan extends EffectTracer.Span {
   readonly subsegment: Subsegment | undefined;
 }
 
-const stripTraceIdPrefix = (raw: string | undefined): string => {
+// Strips X-Ray's "1-" prefix and dashes from a trace id so it lines up with
+// the OpenTelemetry-compatible 32-hex format. Internal helper for building
+// Effect `ExternalSpan`s from X-Ray subsegments.
+export const stripXrayTraceIdPrefix = (raw: string | undefined): string => {
   if (!raw) return "0".repeat(32);
   return raw.startsWith("1-") ? raw.slice(2).replace(/-/g, "") : raw;
 };
@@ -113,7 +116,7 @@ const makeSpan = (
   }
 
   const spanId = subsegment?.id ?? randomHex(16);
-  const traceId = stripTraceIdPrefix(subsegment?.segment?.trace_id);
+  const traceId = stripXrayTraceIdPrefix(subsegment?.segment?.trace_id);
   const sampled = subsegment ? !subsegment.notTraced : false;
 
   let status: EffectTracer.SpanStatus = { _tag: "Started", startTime };
@@ -262,7 +265,3 @@ export const PowertoolsTracerLayer = (
     Layer.succeed(PowertoolsTracerService, options.tracer),
   );
 
-// Strips X-Ray's "1-" prefix and dashes from a trace id so it lines up with
-// OpenTelemetry-compatible 32-hex format. Exported for callers that need to
-// build an Effect `ExternalSpan` from an X-Ray subsegment.
-export const stripXrayTraceIdPrefix = stripTraceIdPrefix;

@@ -14,7 +14,7 @@ const APP_SERVER_DIR = path.join(
   __dirname,
   "..",
   "..",
-  "app",
+  "trigger",
   ".output",
   "server",
 );

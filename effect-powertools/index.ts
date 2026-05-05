@@ -38,8 +38,6 @@ export {
   PowertoolsMetricsService,
 };
 
-export { stripXrayTraceIdPrefix } from "./tracer";
-
 export {
   counter,
   gauge,
@@ -49,3 +47,21 @@ export {
 } from "./metrics";
 
 export type { MetricUnitValue } from "./metrics";
+
+export {
+  processPartialResponse,
+  processFifoPartialResponse,
+} from "./batch";
+
+export type {
+  BatchProcessOptions,
+  FifoBatchProcessOptions,
+} from "./batch";
+
+export { createHandler, createSqsHandler } from "./handlers";
+
+export type {
+  CreateHandlerOptions,
+  CreateSqsHandlerOptions,
+  PowertoolsBridge,
+} from "./handlers";

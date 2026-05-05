@@ -7,7 +7,7 @@ const APP_PUBLIC_DIR = path.join(
   __dirname,
   "..",
   "..",
-  "app",
+  "trigger",
   ".output",
   "public",
 );

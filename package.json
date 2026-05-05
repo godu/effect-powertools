@@ -2,11 +2,11 @@
   "name": "effect-aws-opentelemetry",
   "version": "0.0.1",
   "private": true,
-  "description": "End-to-end CloudWatch observability demo: TanStack Start app → Py producer → SQS → TS/Effect consumer → S3.",
+  "description": "Effect ↔ AWS Lambda Powertools bridge — logger, tracer, metrics, SQS handler factory, batch processor. End-to-end demos under examples/.",
   "workspaces": [
-    "app",
-    "infra",
-    "lambdas/typescript",
-    "lambdas/shared/effect-powertools"
+    "effect-powertools",
+    "examples/trigger",
+    "examples/infra",
+    "examples/consumer"
   ]
 }
