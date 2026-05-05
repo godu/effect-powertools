@@ -2,7 +2,6 @@ import * as aws from "@pulumi/aws";
 import * as pulumi from "@pulumi/pulumi";
 import * as path from "path";
 import {
-  powertoolsPythonLayerArn,
   powertoolsTypescriptLayerArn,
   lambdaInsightsArmArn,
 } from "../layers";
@@ -58,8 +57,8 @@ function createProducerLambda(args: PipelineLambdaArgs): FnResult {
     "..",
     "..",
     "producer",
-    "src",
-    "handler.py",
+    "dist",
+    "handler.mjs",
   );
 
   const fn = new aws.lambda.Function(
@@ -67,15 +66,15 @@ function createProducerLambda(args: PipelineLambdaArgs): FnResult {
     {
       name: fnName,
       role: role.arn,
-      runtime: aws.lambda.Runtime.Python3d12,
+      runtime: aws.lambda.Runtime.NodeJS24dX,
       architectures: ["arm64"],
       handler: "handler.handler",
       memorySize: 512,
       timeout: 10,
       code: new pulumi.asset.AssetArchive({
-        "handler.py": new pulumi.asset.FileAsset(handlerPath),
+        "handler.mjs": new pulumi.asset.FileAsset(handlerPath),
       }),
-      layers: [powertoolsPythonLayerArn, lambdaInsightsArmArn],
+      layers: [powertoolsTypescriptLayerArn, lambdaInsightsArmArn],
       tracingConfig: { mode: "Active" },
       environment: {
         variables: {
@@ -83,7 +82,6 @@ function createProducerLambda(args: PipelineLambdaArgs): FnResult {
           POWERTOOLS_SERVICE_NAME: fnName,
           POWERTOOLS_METRICS_NAMESPACE: POWERTOOLS_NAMESPACE,
           POWERTOOLS_LOG_LEVEL: "INFO",
-          POWERTOOLS_LOGGER_LOG_EVENT: "false",
         },
       },
       tags: args.tags,

@@ -153,10 +153,12 @@ every row above:
                                             │ AWS SDK Lambda Invoke
                                             │ (HTTP-traced via captureHTTPsRequests)
                                             ▼
-                                          producer (Py) → SQS → consumer (TS/Effect) → S3
+                                          producer (TS/Effect) → SQS → consumer (TS/Effect) → S3
 ```
 
-- [`app/`](app) — **TanStack Start** app (latest, Vite-based) built per
+All three deployed Lambdas now run on TypeScript + Effect via the bridge. The Python tables above remain as a side-by-side reference for engineers writing Python Lambdas with `aws-lambda-powertools` directly.
+
+- [`trigger/`](trigger) — **TanStack Start** app (latest, Vite-based) built per
   the [build-from-scratch](https://tanstack.com/start/latest/docs/framework/react/build-from-scratch)
   guide. Serves both the React UI (SSR + hydration) and the
   `/api/trigger` endpoint from one Lambda. The API handler uses the same
@@ -165,22 +167,21 @@ every row above:
   per-emission dimensions, and `captureHTTPsRequests: true` on the
   Powertools tracer so the AWS SDK Lambda Invoke shows up as an HTTPS
   subsegment in the X-Ray trace.
-  See [`app/lambda-handler.mjs`](app/lambda-handler.mjs) for the thin
-  Web-Fetch → Lambda Function URL adapter.
-- [`lambdas/python/src/handler.py`](lambdas/python/src/handler.py) — Python
-  producer using Powertools directly. All 5 log levels, `logger.exception`,
-  multiple `@capture_method` subsegments with annotations + metadata,
-  multiple metric units (Count / Bytes / Milliseconds), static dimension
-  via `add_dimension`, per-emission dimension via `single_metric`.
-- [`lambdas/typescript/src/handler.ts`](lambdas/typescript/src/handler.ts) —
-  TypeScript/Effect consumer using the Effect bridge. All 5 log levels,
-  nested `Effect.withSpan`, `Effect.annotateCurrentSpan`,
-  `Effect.tapError`, every bridge metric helper (counter, histogram,
-  gauge, frequency, timer, `timed`), per-emission dimension via
-  `Metric.tagged`, partial-batch failure via `runPromiseExit` →
-  `batchItemFailures`.
-- [`lambdas/shared/effect-powertools/`](lambdas/shared/effect-powertools) —
-  the Effect↔Powertools bridge.
+- [`producer/src/handler.ts`](producer/src/handler.ts) — TypeScript/Effect
+  producer using `createHandler` from `effect-powertools`. Validates the
+  trigger event via `Schema.Struct`, generates a synthetic order, sends to
+  SQS via `tracer.captureAWSv3Client`-wrapped `@aws-sdk/client-sqs`. Emits
+  Count / Bytes / Milliseconds metrics with `Metric.tagged` per-emission
+  dimensions.
+- [`consumer/src/handler.ts`](consumer/src/handler.ts) — TypeScript/Effect
+  consumer using `createSqsHandler` from `effect-powertools`. Schema-validates
+  each record body via `Schema.parseJson(Order)`. All 5 log levels, nested
+  `Effect.withSpan`, `Effect.annotateCurrentSpan`, `Effect.tapError`,
+  every bridge metric helper (counter, histogram, gauge, frequency, timer,
+  `timed`), per-emission dimension via `Metric.tagged`, partial-batch failure
+  via the bridge's `processPartialResponse` → `batchItemFailures`.
+- [`../effect-powertools/`](../effect-powertools) — the Effect↔Powertools
+  bridge.
 
 The app's Function URL has `AuthType: NONE` for simplicity; in a
 production setup you'd lock it to CloudFront-only via OAC + a request
