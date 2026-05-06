@@ -100,7 +100,7 @@ row — see [Worked example](#worked-example).
 | Histogram (explicit buckets) | `add_metric` with multiple values flushed per period; CloudWatch computes percentiles | `Meter.histogram("OrderAmountHistogram", [100, 1_000, 10_000, 100_000, 1_000_000], { unit: MetricUnit.Count })` |
 | Gauge (last value wins) | emit a counter with the value; CW reduces with `Last`/`Average` | `Meter.gauge("MemoryUsedBytes", { unit: MetricUnit.Bytes })` then `yield* Metric.update(g, bytes)` |
 | Timer (duration distribution) | `add_metric("WriteLatencyMs", MetricUnit.Milliseconds, ms)` | `Metric.timer("WriteLatency")` + `Metric.trackDuration(t)` as a `.pipe(...)` step |
-| Frequency (string occurrence count) | n/a — emit one counter per value manually | `Meter.frequency("OrderShape")` then `yield* Metric.update(f, "normal" \| "high" \| "poison")` — bridge emits one metric per distinct value (`OrderShape.normal`, `OrderShape.high`, `OrderShape.poison`) |
+| Frequency (string occurrence count) | n/a — emit one counter per value manually | `Meter.frequency("OrderShape", { preregisteredWords: [...] })` then `yield* Metric.update(f, "normal" \| "high" \| "poison")` — bridge emits one metric per distinct value (`OrderShape.normal`, `OrderShape.high`, `OrderShape.poison`) |
 | Count + duration around an Effect | wrap manually with `time.perf_counter()` | `Meter.instrument("OrderProcess", effect)` — bridge adds `OrderProcess` counter + `OrderProcessDuration` timer |
 | Cold start | `@metrics.log_metrics(capture_cold_start_metric=True)` | `ptMetrics.captureColdStartMetric()` |
 
@@ -163,23 +163,35 @@ All three deployed Lambdas now run on TypeScript + Effect via the bridge. The Py
   guide. Serves both the React UI (SSR + hydration) and the
   `/api/trigger` endpoint from one Lambda. The API handler uses the same
   Effect↔Powertools bridge as the consumer — all 5 log levels, nested
-  `Effect.withSpan`, every bridge metric helper, `Metric.tagged` for
-  per-emission dimensions, and `captureHTTPsRequests: true` on the
-  Powertools tracer so the AWS SDK Lambda Invoke shows up as an HTTPS
-  subsegment in the X-Ray trace.
+  `Effect.withSpan`, every `Meter` metric helper, `Metric.tagged` for
+  per-emission dimensions, `Meter.frequency({ preregisteredWords: ... })`,
+  the TanStack pair `provideRuntimeServer` + `captureRequest({ serviceName, resolveSpanName })`,
+  and `captureHTTPsRequests: true` on the Powertools tracer so the AWS SDK
+  Lambda Invoke shows up as an HTTPS subsegment in the X-Ray trace.
 - [`producer/src/handler.ts`](producer/src/handler.ts) — TypeScript/Effect
-  producer using `createLambdaHandler` from `effect-powertools`. Validates the
-  trigger event via `Schema.Struct`, generates a synthetic order, sends to
+  producer using `createLambdaHandler` from `effect-powertools`. Validates
+  the trigger event via `Schema.Struct`, generates a synthetic order, sends to
   SQS via `tracer.captureAWSv3Client`-wrapped `@aws-sdk/client-sqs`. Emits
   Count / Bytes / Milliseconds metrics with `Metric.tagged` per-emission
-  dimensions.
+  dimensions, demonstrates the `before:` cold-start hook (rss memory gauge),
+  `Meter.counter({ description, incremental })` options, and an
+  invocation-wide CloudWatch dimension set via `PowertoolsMetricsService.addDimension`
+  from inside an Effect.
 - [`consumer/src/handler.ts`](consumer/src/handler.ts) — TypeScript/Effect
   consumer using `createSqsLambdaHandler` from `effect-powertools`. Schema-validates
   each record body via `Schema.parseJson(Order)`. All 5 log levels, nested
   `Effect.withSpan`, `Effect.annotateCurrentSpan`, `Effect.tapError`,
   every `Meter` helper (counter, histogram, gauge, frequency, timer,
-  `Meter.instrument`), per-emission dimension via `Metric.tagged`, partial-batch failure
-  via the bridge's `processPartialResponse` → `batchItemFailures`.
+  `Meter.instrument`), per-emission dimension via `Metric.tagged`,
+  partial-batch failure via the bridge's `processPartialResponse` →
+  `batchItemFailures`, an `onRecordFailure` callback that buckets failures
+  by `_tag` on a tagged counter, env-toggled `fifo: true` mode (sequential
+  processing with short-circuit, mirroring `processFifoPartialResponse`),
+  and a custom `classifyAttribute` on `PowertoolsTracerLayer` that routes
+  `payload.*` span attributes to X-Ray *metadata* (non-indexed) while
+  short keys stay annotations (indexed). The bottom of the file documents
+  the lower-level `processPartialResponse` / `processFifoPartialResponse`
+  shape for advanced lifecycles.
 - [`../effect-powertools/`](../effect-powertools) — the Effect↔Powertools
   bridge.
 

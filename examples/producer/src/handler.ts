@@ -13,6 +13,7 @@ import {
   createLambdaHandler,
   Meter,
   PowertoolsBridgeLayer,
+  PowertoolsMetricsService,
 } from "effect-powertools";
 
 const ptLogger = new PowertoolsLogger();
@@ -49,15 +50,33 @@ class SendOrderError {
   }
 }
 
-const ordersEmitted = Meter.counter("OrdersEmitted", { unit: MetricUnit.Count });
+// `incremental: true` rejects negative deltas — orders only ever go up.
+// `description` is forwarded to Effect's metric registry; useful when
+// inspecting via `Metric.snapshot` or external Effect tooling.
+const ordersEmitted = Meter.counter("OrdersEmitted", {
+  unit: MetricUnit.Count,
+  description: "Orders successfully sent to SQS",
+  incremental: true,
+});
 const sendFailures = Meter.counter("SendFailures", { unit: MetricUnit.Count });
 const ordersByShape = Meter.counter("OrdersByShape", { unit: MetricUnit.Count });
 const payloadBytes = Meter.histogram(
   "PayloadBytes",
   [128, 256, 512, 1024, 2048],
-  { unit: MetricUnit.Bytes },
+  {
+    unit: MetricUnit.Bytes,
+    description: "JSON-serialized order payload size, in bytes",
+  },
 );
 const emitLatency = Metric.timer("EmitLatencyMs");
+const memoryUsedBytes = Meter.gauge("MemoryUsedBytes", { unit: MetricUnit.Bytes });
+
+// Run-once-per-invocation effect passed as `before:` on the handler — sets
+// the rss memory gauge before the user program touches anything. Mirrors
+// the consumer's pattern but here the bridge does the wiring via `before:`.
+const sampleMemory = Effect.sync(() => process.memoryUsage().rss).pipe(
+  Effect.flatMap((bytes) => Metric.update(memoryUsedBytes, bytes)),
+);
 
 const classifyAmount = (amount: number): string => {
   if (amount < 0) return "poison";
@@ -103,6 +122,13 @@ const program = Effect.gen(function* () {
   const order = yield* buildOrder;
   const body = JSON.stringify(order);
   const shape = classifyAmount(order.amountCents);
+
+  // Set an invocation-wide CloudWatch dimension from inside an Effect.
+  // Same effect as `ptMetrics.addDimension(...)` at handler entry; doing it
+  // from the Effect side keeps the wiring colocated with the data that
+  // determines the dimension value.
+  const ptMetrics = yield* PowertoolsMetricsService;
+  yield* ptMetrics.addDimension("orderShape", shape);
 
   yield* Effect.annotateCurrentSpan("orderId", order.orderId);
   yield* Effect.annotateCurrentSpan("orderShape", shape);
@@ -163,6 +189,7 @@ export const handler = createLambdaHandler(
       metrics: ptMetrics,
     }),
     serviceName: "producer",
+    before: sampleMemory,
   },
   (_event, _context) => program,
 );

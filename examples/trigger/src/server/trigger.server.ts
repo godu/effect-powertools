@@ -19,7 +19,12 @@ const lambda = new LambdaClient({});
 const triggersReceived = Meter.counter("TriggersReceived", { unit: MetricUnit.Count });
 const triggerLatency = Metric.timer("TriggerLatency");
 const memoryUsedBytes = Meter.gauge("MemoryUsedBytes", { unit: MetricUnit.Bytes });
-const orderShapeFreq = Meter.frequency("OrderShape");
+// `preregisteredWords` reserves slots for known values so the underlying
+// frequency metric reports zero counts for shapes that haven't been seen
+// yet (rather than silently absent CloudWatch series).
+const orderShapeFreq = Meter.frequency("OrderShape", {
+  preregisteredWords: ["normal", "high", "poison", "unknown"],
+});
 const responseSize = Meter.histogram(
   "ProducerResponseBytes",
   [50, 100, 250, 500, 1000, 5000],
