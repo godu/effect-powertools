@@ -61,21 +61,23 @@ createAppInsights({
 });
 createAlarms({
   namePrefix,
+  stack,
   producer,
   consumer,
   trigger: app.fn,
+  mainQueue: queue.main,
   dlq: queue.dlq,
   tags,
 });
 const dashboard = createDashboard({
   namePrefix,
+  stack,
   region: REGION,
   producer,
   consumer,
   trigger: app.fn,
   mainQueue: queue.main,
   dlq: queue.dlq,
-  dataBucket,
 });
 
 // Stack outputs

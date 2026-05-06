@@ -39,8 +39,12 @@ const Order = Schema.Struct({
 type Order = typeof Order.Type;
 const OrderFromBody = Schema.parseJson(Order);
 
-const ordersWritten = Meter.counter("OrdersWritten", { unit: MetricUnit.Count });
-const orderAmountCents = Meter.counter("OrderAmountCents", { unit: MetricUnit.Count });
+const ordersWritten = Meter.counter("OrdersWritten", {
+  unit: MetricUnit.Count,
+});
+const orderAmountCents = Meter.counter("OrderAmountCents", {
+  unit: MetricUnit.Count,
+});
 const orderAmountHistogram = Meter.histogram(
   "OrderAmountHistogram",
   [100, 1_000, 10_000, 100_000, 1_000_000],
@@ -50,9 +54,15 @@ const orderAmountHistogram = Meter.histogram(
   },
 );
 const writeLatency = Metric.timer("WriteLatency");
-const recordsRejected = Meter.counter("RecordsRejected", { unit: MetricUnit.Count });
-const recordFailures = Meter.counter("RecordFailures", { unit: MetricUnit.Count });
-const memoryUsedBytes = Meter.gauge("MemoryUsedBytes", { unit: MetricUnit.Bytes });
+const recordsRejected = Meter.counter("RecordsRejected", {
+  unit: MetricUnit.Count,
+});
+const recordFailures = Meter.counter("RecordFailures", {
+  unit: MetricUnit.Count,
+});
+const memoryUsedBytes = Meter.gauge("MemoryUsedBytes", {
+  unit: MetricUnit.Bytes,
+});
 const orderShapeFreq = Meter.frequency("OrderShape");
 
 // X-Ray annotations are indexed (queryable in the X-Ray console) but bounded
@@ -193,8 +203,14 @@ const writeOne = (order: Order, record: SQSRecord) =>
         Metric.tagged(ordersWritten, "orderShape", shape),
         1,
       );
-      yield* Metric.update(orderAmountCents, order.amountCents);
-      yield* Metric.update(orderAmountHistogram, order.amountCents);
+      yield* Metric.update(
+        Metric.tagged(orderAmountCents, "orderShape", shape),
+        order.amountCents,
+      );
+      yield* Metric.update(
+        Metric.tagged(orderAmountHistogram, "orderShape", shape),
+        order.amountCents,
+      );
 
       yield* Effect.logInfo("order_written").pipe(
         Effect.annotateLogs({ orderId: order.orderId }),
