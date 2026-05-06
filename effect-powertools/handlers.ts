@@ -148,6 +148,7 @@ export const createLambdaHandler = <A, I, R, E, Out>(
   registerSigtermDisposer(runtime);
 
   return async (event: I, context: LambdaContext): Promise<Out> => {
+    context.callbackWaitsForEmptyEventLoop = false;
     const serviceName = opts.serviceName ?? context.functionName;
 
     const main = Effect.acquireUseRelease(
@@ -240,6 +241,7 @@ export const createSqsLambdaHandler = <A, I, R, E>(
     event: SQSEvent,
     context: LambdaContext,
   ): Promise<SQSBatchResponse> => {
+    context.callbackWaitsForEmptyEventLoop = false;
     const serviceName = opts.serviceName ?? context.functionName;
 
     const main = Effect.acquireUseRelease(

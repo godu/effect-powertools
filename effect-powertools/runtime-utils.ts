@@ -1,11 +1,12 @@
+import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Tracer from "effect/Tracer";
 
-// Tracks runtimes whose SIGTERM disposer we've already registered, so calling
-// the registration helper more than once with the same runtime doesn't leak
-// listeners.
+// Tracks runtimes whose SIGTERM/SIGINT disposer we've already registered, so
+// calling the registration helper more than once with the same runtime doesn't
+// leak listeners.
 const registeredDisposers = new WeakSet<
   ManagedRuntime.ManagedRuntime<unknown, unknown>
 >();
@@ -19,9 +20,21 @@ export const registerSigtermDisposer = <R, E>(
     return;
   }
   registeredDisposers.add(opaque);
-  process.on("SIGTERM", () => {
-    void runtime.dispose();
-  });
+
+  const listener: NodeJS.SignalsListener = (signal) => {
+    Effect.runFork(
+      Effect.gen(function* () {
+        yield* Console.log(
+          `[effect-powertools] ${signal} received, disposing runtime`,
+        );
+        yield* runtime.disposeEffect;
+        yield* Console.log("[effect-powertools] runtime disposed, exiting");
+        yield* Effect.sync(() => process.exit(0));
+      }),
+    );
+  };
+  process.on("SIGTERM", listener);
+  process.on("SIGINT", listener);
 };
 
 // Returns a proxy whose `run*` methods auto-apply `Layer.parentSpan(span)` to
