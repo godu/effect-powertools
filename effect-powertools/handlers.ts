@@ -27,9 +27,9 @@ import { PowertoolsTracerService, stripXrayTraceIdPrefix } from "./tracer";
 
 /**
  * Lambda handler factories that hide observability boilerplate behind a
- * single call. `createHandler` works with any Lambda event type; pass an
- * `effect/Schema` that validates the raw event before your code runs.
- * `createSqsHandler` is SQS-specialized sugar that adds per-record body
+ * single call. `createLambdaHandler` works with any Lambda event type; pass
+ * an `effect/Schema` that validates the raw event before your code runs.
+ * `createSqsLambdaHandler` is SQS-specialized sugar that adds per-record body
  * validation and wires the batch processors so failures travel via
  * `SQSBatchResponse.batchItemFailures`.
  *
@@ -44,9 +44,10 @@ import { PowertoolsTracerService, stripXrayTraceIdPrefix } from "./tracer";
  *             Always runs.
  */
 
-// Aggregate of the three Powertools bridge services. `createHandler`'s `layer`
-// must produce at least these three so the factory can read the raw Powertools
-// instances back at runtime (one source of truth per process).
+// Aggregate of the three Powertools bridge services. The `layer` passed to
+// `createLambdaHandler` / `createSqsLambdaHandler` must produce at least
+// these three so the factory can read the raw Powertools instances back at
+// runtime (one source of truth per process).
 export type PowertoolsBridge =
   | PowertoolsLoggerService
   | PowertoolsTracerService
@@ -122,10 +123,10 @@ const provideParentSpan = <A, E, R>(
   span ? Effect.provide(effect, Layer.parentSpan(span)) : effect;
 
 // =============================================================================
-// createHandler — generic Lambda handler factory
+// createLambdaHandler — generic Lambda handler factory
 // =============================================================================
 
-export interface CreateHandlerOptions<A, I, R, E> {
+export interface CreateLambdaHandlerOptions<A, I, R, E> {
   /** Schema decoding the raw Lambda event. Failures abort the invocation. */
   readonly schema: Schema.Schema<A, I, never>;
   /** Layer providing the Powertools bridge plus any app services. */
@@ -136,8 +137,8 @@ export interface CreateHandlerOptions<A, I, R, E> {
   readonly before?: Effect.Effect<unknown, unknown, R | PowertoolsBridge>;
 }
 
-export const createHandler = <A, I, R, E, Out>(
-  opts: CreateHandlerOptions<A, I, R, E>,
+export const createLambdaHandler = <A, I, R, E, Out>(
+  opts: CreateLambdaHandlerOptions<A, I, R, E>,
   program: (
     input: A,
     context: LambdaContext,
@@ -180,10 +181,10 @@ export const createHandler = <A, I, R, E, Out>(
 };
 
 // =============================================================================
-// createSqsHandler — SQS-specialized sugar built on the batch processors
+// createSqsLambdaHandler — SQS-specialized sugar built on the batch processors
 // =============================================================================
 
-export interface CreateSqsHandlerOptions<A, I, R, E> {
+export interface CreateSqsLambdaHandlerOptions<A, I, R, E> {
   /** Schema decoding each record's `body`. Use `Schema.parseJson(...)` for JSON payloads. */
   readonly recordSchema: Schema.Schema<A, I, never>;
   /** Layer providing the Powertools bridge plus any app services. */
@@ -203,8 +204,8 @@ export interface CreateSqsHandlerOptions<A, I, R, E> {
   ) => Effect.Effect<void, never, R | PowertoolsBridge>;
 }
 
-export const createSqsHandler = <A, I, R, E>(
-  opts: CreateSqsHandlerOptions<A, I, R, E>,
+export const createSqsLambdaHandler = <A, I, R, E>(
+  opts: CreateSqsLambdaHandlerOptions<A, I, R, E>,
   recordHandler: (
     parsed: A,
     record: SQSRecord,

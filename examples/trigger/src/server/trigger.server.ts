@@ -3,13 +3,7 @@ import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import * as Effect from "effect/Effect";
 import * as Metric from "effect/Metric";
 
-import {
-  counter,
-  frequency,
-  gauge,
-  histogram,
-  timed,
-} from "effect-powertools";
+import { Meter } from "effect-powertools";
 
 const PRODUCER_FUNCTION_NAME = process.env.PRODUCER_FUNCTION_NAME;
 if (!PRODUCER_FUNCTION_NAME) {
@@ -22,11 +16,11 @@ if (!PRODUCER_FUNCTION_NAME) {
 // middleware has set as active.
 const lambda = new LambdaClient({});
 
-const triggersReceived = counter("TriggersReceived", { unit: MetricUnit.Count });
+const triggersReceived = Meter.counter("TriggersReceived", { unit: MetricUnit.Count });
 const triggerLatency = Metric.timer("TriggerLatency");
-const memoryUsedBytes = gauge("MemoryUsedBytes", { unit: MetricUnit.Bytes });
-const orderShapeFreq = frequency("OrderShape");
-const responseSize = histogram(
+const memoryUsedBytes = Meter.gauge("MemoryUsedBytes", { unit: MetricUnit.Bytes });
+const orderShapeFreq = Meter.frequency("OrderShape");
+const responseSize = Meter.histogram(
   "ProducerResponseBytes",
   [50, 100, 250, 500, 1000, 5000],
   { unit: MetricUnit.Bytes },
@@ -116,7 +110,7 @@ export const triggerProgram: Effect.Effect<
   InvokeError | FunctionError
 > = sampleMemory.pipe(
   Effect.flatMap(() =>
-    timed(
+    Meter.instrument(
       "TriggerProcess",
       Effect.gen(function* () {
         yield* Effect.logDebug("trigger_request_received");

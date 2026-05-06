@@ -7,6 +7,11 @@ import * as Layer from "effect/Layer";
 
 import { PowertoolsLoggerLayer, PowertoolsLoggerService } from "./logger";
 import {
+  counter,
+  frequency,
+  gauge,
+  histogram,
+  instrument,
   PowertoolsMetricsLayer,
   PowertoolsMetricsService,
 } from "./metrics";
@@ -18,7 +23,7 @@ export interface PowertoolsBridgeOptions {
   readonly metrics: PowertoolsMetrics;
 }
 
-export const PowertoolsLayer = (
+export const PowertoolsBridgeLayer = (
   options: PowertoolsBridgeOptions,
 ): Layer.Layer<
   PowertoolsLoggerService | PowertoolsTracerService | PowertoolsMetricsService
@@ -38,15 +43,22 @@ export {
   PowertoolsMetricsService,
 };
 
-export {
+// Namespace export: bare metric helpers shadow `effect/Metric.counter` etc.
+// at call sites. Grouping under `Meter` removes the ambiguity and signals
+// "this constructor pre-tags the unit and bridges to Powertools EMF."
+//
+// `instrument(name, effect)` is colocated here as the call-metrics operator
+// (count + duration timer around an Effect) — same naming pattern as
+// `Effect.withSpan` for tracing.
+export const Meter = {
   counter,
   gauge,
   histogram,
   frequency,
-  timed,
-} from "./metrics";
+  instrument,
+} as const;
 
-export type { MetricUnitValue } from "./metrics";
+export type { MetricUnitValue, MetricOptions } from "./metrics";
 
 export {
   processPartialResponse,
@@ -58,10 +70,20 @@ export type {
   FifoBatchProcessOptions,
 } from "./batch";
 
-export { createHandler, createSqsHandler } from "./handlers";
+export { createLambdaHandler, createSqsLambdaHandler } from "./handlers";
 
 export type {
-  CreateHandlerOptions,
-  CreateSqsHandlerOptions,
+  CreateLambdaHandlerOptions,
+  CreateSqsLambdaHandlerOptions,
   PowertoolsBridge,
 } from "./handlers";
+
+// Customization option types for the per-component layers — re-exported so
+// consumers can write a typed `classifyAttribute` / `levelMap` callback
+// without deep-importing from `./tracer` or `./logger`.
+export type { PowertoolsLoggerOptions } from "./logger";
+export type {
+  AttributeKind,
+  PowertoolsTracerOptions,
+} from "./tracer";
+export type { PowertoolsMetricsOptions } from "./metrics";

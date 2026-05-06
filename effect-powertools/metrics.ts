@@ -277,10 +277,13 @@ export const PowertoolsMetricsLayer = (
   });
 
 // ---------------------------------------------------------------------------
-// timed: count + duration timer around an effect
+// instrument: count + duration timer around an effect.
+// Wraps `effect` with `${name}` counter + `${name}Duration` timer. Surfaced
+// from `Meter` rather than colocated with the metric *constructors* because
+// it's an Effect operator, not a metric constructor.
 // ---------------------------------------------------------------------------
 
-export const timed = <A, E, R>(
+export const instrument = <A, E, R>(
   name: string,
   effect: Effect.Effect<A, E, R>,
 ): Effect.Effect<A, E, R> => {

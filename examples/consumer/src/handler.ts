@@ -11,13 +11,9 @@ import * as Metric from "effect/Metric";
 import * as Schema from "effect/Schema";
 
 import {
-  counter,
-  createSqsHandler,
-  frequency,
-  gauge,
-  histogram,
-  PowertoolsLayer,
-  timed,
+  createSqsLambdaHandler,
+  Meter,
+  PowertoolsBridgeLayer,
 } from "effect-powertools";
 
 const ptLogger = new PowertoolsLogger();
@@ -38,17 +34,17 @@ const Order = Schema.Struct({
 type Order = typeof Order.Type;
 const OrderFromBody = Schema.parseJson(Order);
 
-const ordersWritten = counter("OrdersWritten", { unit: MetricUnit.Count });
-const orderAmountCents = counter("OrderAmountCents", { unit: MetricUnit.Count });
-const orderAmountHistogram = histogram(
+const ordersWritten = Meter.counter("OrdersWritten", { unit: MetricUnit.Count });
+const orderAmountCents = Meter.counter("OrderAmountCents", { unit: MetricUnit.Count });
+const orderAmountHistogram = Meter.histogram(
   "OrderAmountHistogram",
   [100, 1_000, 10_000, 100_000, 1_000_000],
   { unit: MetricUnit.Count },
 );
 const writeLatency = Metric.timer("WriteLatency");
-const recordsRejected = counter("RecordsRejected", { unit: MetricUnit.Count });
-const memoryUsedBytes = gauge("MemoryUsedBytes", { unit: MetricUnit.Bytes });
-const orderShapeFreq = frequency("OrderShape");
+const recordsRejected = Meter.counter("RecordsRejected", { unit: MetricUnit.Count });
+const memoryUsedBytes = Meter.gauge("MemoryUsedBytes", { unit: MetricUnit.Bytes });
+const orderShapeFreq = Meter.frequency("OrderShape");
 
 class PoisonOrderError {
   readonly _tag = "PoisonOrderError";
@@ -106,7 +102,7 @@ const putToS3 = (order: Order, body: string) =>
   );
 
 const writeOne = (order: Order, record: SQSRecord) =>
-  timed(
+  Meter.instrument(
     "OrderProcess",
     Effect.gen(function* () {
       yield* Effect.logDebug("record_received").pipe(
@@ -184,9 +180,9 @@ const sampleMemory = Effect.sync(() => process.memoryUsage().rss).pipe(
   Effect.flatMap((bytes) => Metric.update(memoryUsedBytes, bytes)),
 );
 
-export const handler = createSqsHandler(
+export const handler = createSqsLambdaHandler(
   {
-    layer: PowertoolsLayer({
+    layer: PowertoolsBridgeLayer({
       logger: ptLogger,
       tracer: ptTracer,
       metrics: ptMetrics,

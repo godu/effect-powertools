@@ -8,8 +8,8 @@ An [Effect](https://effect.website/) ↔ [AWS Lambda Powertools](https://docs.po
 2. [Quick start](#quick-start)
 3. [Layers & services](#layers--services)
 4. [Metric helpers](#metric-helpers)
-5. [`createHandler` (generic)](#createhandler-generic)
-6. [`createSqsHandler` (SQS sugar)](#createsqshandler-sqs-sugar)
+5. [`createLambdaHandler` (generic)](#createlambdahandler-generic)
+6. [`createSqsLambdaHandler` (SQS sugar)](#createsqslambdahandler-sqs-sugar)
 7. [Batch processors](#batch-processors)
 8. [TanStack Start subpath](#tanstack-start-subpath)
 9. [Caveats](#caveats)
@@ -21,9 +21,9 @@ This package wraps `@aws-lambda-powertools/{logger,metrics,tracer}` so they're a
 - **Logger bridge** — Effect's `Logger.defaultLogger` is replaced with one that calls `powertoolsLogger.info(...)` / `.error(...)` / etc. The Effect log level maps to the Powertools method; annotations + spans + cause traces flow through as the structured `extras` object.
 - **Tracer bridge** — Effect spans become X-Ray subsegments. A per-step `cls-hooked` namespace pins the right segment to each fiber so concurrent `Effect.forEach({ concurrency: "unbounded" })` branches keep their AWS SDK leaf subsegments correctly nested.
 - **Metrics bridge** — Effect's `globalMetricRegistry` is monkey-patched once at load. Every counter / gauge / histogram / frequency update forwards to `powertoolsMetrics.addMetric(...)`. Units travel as Effect metric tags (`unit:Bytes`, `time_unit:milliseconds`).
-- **Handler factories** — `createHandler` and `createSqsHandler` wrap the cold-start, `addContext`, parent-subsegment, and metric-flush boilerplate around any Effect program. Inputs are validated via `effect/Schema` before your code runs.
+- **Handler factories** — `createLambdaHandler` and `createSqsLambdaHandler` wrap the cold-start, `addContext`, parent-subsegment, and metric-flush boilerplate around any Effect program. Inputs are validated via `effect/Schema` before your code runs.
 - **Batch processors** — `processPartialResponse` and `processFifoPartialResponse` give you Effect-native SQS partial-batch failures with auto-emitted `BatchRecordSuccesses` / `BatchRecordFailures` counters.
-- **TanStack Start integration** — `runtimeServerFn` + `observabilityServerFn` for full-stack Lambda apps that serve SSR pages and API endpoints from the same function.
+- **TanStack Start integration** — `provideRuntimeServer` + `captureRequest` for full-stack Lambda apps that serve SSR pages and API endpoints from the same function.
 
 ## Quick start
 
@@ -32,7 +32,7 @@ import { Logger as PowertoolsLogger } from "@aws-lambda-powertools/logger";
 import { Metrics as PowertoolsMetrics } from "@aws-lambda-powertools/metrics";
 import { Tracer as PowertoolsTracer } from "@aws-lambda-powertools/tracer";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { createSqsHandler, PowertoolsLayer } from "effect-powertools";
+import { createSqsLambdaHandler, PowertoolsBridgeLayer } from "effect-powertools";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -55,9 +55,9 @@ const ptMetrics = new PowertoolsMetrics();
 const s3 = ptTracer.captureAWSv3Client(new S3Client({}));
 
 // 3. Build the layer once, hand it to the factory.
-export const handler = createSqsHandler(
+export const handler = createSqsLambdaHandler(
   {
-    layer: PowertoolsLayer({ logger: ptLogger, tracer: ptTracer, metrics: ptMetrics }),
+    layer: PowertoolsBridgeLayer({ logger: ptLogger, tracer: ptTracer, metrics: ptMetrics }),
     recordSchema: OrderFromBody,
     serviceName: "orders",
   },
@@ -83,9 +83,9 @@ The handler returns `{ batchItemFailures: [...] }` per the SQS partial-batch pro
 
 ## Layers & services
 
-### `PowertoolsLayer({ logger, tracer, metrics })`
+### `PowertoolsBridgeLayer({ logger, tracer, metrics })`
 
-Convenience layer that merges the three bridge layers below. Pass it to `ManagedRuntime.make(...)`, or include it in a larger `Layer.merge(PowertoolsLayer(...), AppLayer)` and hand the merged layer to `createHandler` / `createSqsHandler`.
+Convenience layer that merges the three bridge layers below. Pass it to `ManagedRuntime.make(...)`, or include it in a larger `Layer.merge(PowertoolsBridgeLayer(...), AppLayer)` and hand the merged layer to `createLambdaHandler` / `createSqsLambdaHandler`.
 
 ### `PowertoolsLoggerLayer({ logger, levelMap? })` / `PowertoolsLoggerService`
 
@@ -101,33 +101,35 @@ Patches Effect's global metric registry once per process. Every counter / gauge 
 
 ## Metric helpers
 
-Pre-tagged constructors that automatically attach a `unit:<MetricUnit>` tag the bridge will read on emission:
+Pre-tagged constructors that automatically attach a `unit:<MetricUnit>` tag the bridge will read on emission. Grouped under `Meter` so they don't shadow `effect/Metric`'s `counter` / `gauge` / `histogram` / `frequency`:
 
 ```ts
-import { counter, gauge, histogram, frequency, timed } from "effect-powertools";
+import { Meter } from "effect-powertools";
 import { MetricUnit } from "@aws-lambda-powertools/metrics";
 
-const ordersWritten = counter("OrdersWritten", { unit: MetricUnit.Count });
-const memoryBytes = gauge("MemoryBytes", { unit: MetricUnit.Bytes });
-const orderAmountHistogram = histogram(
+const ordersWritten = Meter.counter("OrdersWritten", { unit: MetricUnit.Count });
+const memoryBytes = Meter.gauge("MemoryBytes", { unit: MetricUnit.Bytes });
+const orderAmountHistogram = Meter.histogram(
   "OrderAmountHistogram",
   [100, 1_000, 10_000, 100_000, 1_000_000],
   { unit: MetricUnit.Count },
 );
-const orderShape = frequency("OrderShape");
+const orderShape = Meter.frequency("OrderShape", {
+  preregisteredWords: ["normal", "high", "poison"],
+});
 
-// `timed` bundles a count + duration timer around an Effect:
-const writeOne = timed("OrderProcess", putToS3(order));
+// `Meter.instrument` bundles a count + duration timer around an Effect:
+const writeOne = Meter.instrument("OrderProcess", putToS3(order));
 ```
 
 Recognized unit tags: any value from `@aws-lambda-powertools/metrics`'s `MetricUnit`, plus `time_unit` (auto-attached by Effect's `Metric.timer`) supporting `nanoseconds` / `microseconds` / `milliseconds` / `seconds`. Unknown units fall back to `Count`. Other tags become Powertools dimensions via `metrics.singleMetric()`.
 
-## `createHandler` (generic)
+## `createLambdaHandler` (generic)
 
 Lambda handler factory for any event type — HTTP API Gateway, EventBridge, S3, scheduled events, etc. Wraps observability boilerplate, validates the event with an `effect/Schema`, and runs your Effect program with the Lambda subsegment set as the parent span.
 
 ```ts
-import { createHandler, PowertoolsLayer } from "effect-powertools";
+import { createLambdaHandler, PowertoolsBridgeLayer } from "effect-powertools";
 import * as Schema from "effect/Schema";
 
 const ApiEvent = Schema.Struct({
@@ -135,10 +137,10 @@ const ApiEvent = Schema.Struct({
   headers: Schema.Record({ key: Schema.String, value: Schema.String }),
 });
 
-export const handler = createHandler(
+export const handler = createLambdaHandler(
   {
     schema: ApiEvent,
-    layer: PowertoolsLayer({ logger, tracer, metrics }),
+    layer: PowertoolsBridgeLayer({ logger, tracer, metrics }),
     serviceName: "orders-api",
   },
   (event, _context) =>
@@ -149,15 +151,15 @@ export const handler = createHandler(
 | Option | Type | Purpose |
 |---|---|---|
 | `schema` | `Schema.Schema<A, I, never>` | Decodes the raw Lambda event. `ParseError` → typed Effect failure → invocation throws (Lambda treats as failed). |
-| `layer` | `Layer.Layer<PowertoolsBridge \| R, E>` | Must produce the three bridge services. Compose with `PowertoolsLayer({...})` and any app layers. |
+| `layer` | `Layer.Layer<PowertoolsBridge \| R, E>` | Must produce the three bridge services. Compose with `PowertoolsBridgeLayer({...})` and any app layers. |
 | `serviceName` | `string?` | Used for the `## ${serviceName}` X-Ray subsegment. Defaults to `context.functionName`. |
 | `before` | `Effect<unknown, unknown, R \| PowertoolsBridge>?` | Runs once per invocation, after acquire and before your program (e.g. memory sample, cold-start metric). |
 
 The runtime is built once at module load via `ManagedRuntime.make(opts.layer)` and a SIGTERM disposer is registered (idempotently) so Lambda's freeze/thaw cycle doesn't leak listeners.
 
-## `createSqsHandler` (SQS sugar)
+## `createSqsLambdaHandler` (SQS sugar)
 
-SQS-specialized factory built on `createHandler` + the batch processors. Validates each record's `body` via `recordSchema`, routes decode failures to `batchItemFailures`, and runs successful records through your handler.
+SQS-specialized factory built on `createLambdaHandler` + the batch processors. Validates each record's `body` via `recordSchema`, routes decode failures to `batchItemFailures`, and runs successful records through your handler.
 
 ```ts
 const Order = Schema.Struct({
@@ -166,9 +168,9 @@ const Order = Schema.Struct({
 });
 const OrderFromBody = Schema.parseJson(Order);
 
-export const handler = createSqsHandler(
+export const handler = createSqsLambdaHandler(
   {
-    layer: PowertoolsLayer({ logger, tracer, metrics }),
+    layer: PowertoolsBridgeLayer({ logger, tracer, metrics }),
     recordSchema: OrderFromBody,
     serviceName: "orders",
     concurrency: "unbounded",   // default
@@ -181,8 +183,8 @@ export const handler = createSqsHandler(
 | Option | Type | Purpose |
 |---|---|---|
 | `recordSchema` | `Schema.Schema<A, I, never>` | Decodes `record.body`. Use `Schema.parseJson(YourSchema)` for JSON payloads. Decode failures land in `batchItemFailures`. |
-| `layer` | `Layer.Layer<PowertoolsBridge \| R, E>` | Same as `createHandler`. |
-| `serviceName` | `string?` | Same as `createHandler`. |
+| `layer` | `Layer.Layer<PowertoolsBridge \| R, E>` | Same as `createLambdaHandler`. |
+| `serviceName` | `string?` | Same as `createLambdaHandler`. |
 | `fifo` | `boolean?` | If `true`, processes records strictly in order and short-circuits on first failure (every subsequent record is marked failed). Matches Powertools `SqsFifoPartialProcessor` semantics. Default `false`. |
 | `concurrency` | `number \| "unbounded"?` | Non-FIFO only. Forwarded to `Effect.forEach`. Default `"unbounded"`. |
 | `beforeBatch` | `Effect<unknown, unknown, R \| PowertoolsBridge>?` | Runs once per invocation, before the batch loop (e.g. memory sample, dimension push). |
@@ -190,15 +192,15 @@ export const handler = createSqsHandler(
 
 ### Sharing the tracer with `captureAWSv3Client`
 
-Declare the Powertools instances at module scope so `ptTracer.captureAWSv3Client(...)` can wrap the AWS SDK client at load time, then hand those same instances to `PowertoolsLayer({...})`:
+Declare the Powertools instances at module scope so `ptTracer.captureAWSv3Client(...)` can wrap the AWS SDK client at load time, then hand those same instances to `PowertoolsBridgeLayer({...})`:
 
 ```ts
 const ptTracer = new PowertoolsTracer();
 const s3 = ptTracer.captureAWSv3Client(new S3Client({}));   // wraps once, at load time
 
-export const handler = createSqsHandler(
+export const handler = createSqsLambdaHandler(
   {
-    layer: PowertoolsLayer({ logger: new Logger(), tracer: ptTracer, metrics: new Metrics() }),
+    layer: PowertoolsBridgeLayer({ logger: new Logger(), tracer: ptTracer, metrics: new Metrics() }),
     // ...
   },
   (order, record) => putObject(s3, order, record),
@@ -209,7 +211,7 @@ The factory reads the bridge instances back through the layer at runtime, so the
 
 ## Batch processors
 
-Standalone building blocks for SQS partial-batch failures. `createSqsHandler` uses them internally; export them for cases where you need a custom acquire/release lifecycle.
+Standalone building blocks for SQS partial-batch failures. `createSqsLambdaHandler` uses them internally; export them for cases where you need a custom acquire/release lifecycle.
 
 ### `processPartialResponse(event, recordHandler, options?)`
 
@@ -246,11 +248,11 @@ If you need different metric names, wrap the processors and increment your own c
 For full-stack TanStack Start Lambdas (SSR + API endpoints in one function), import from the `effect-powertools/tanstack-start` subpath:
 
 ```ts
-import { runtimeServerFn, observabilityServerFn } from "effect-powertools/tanstack-start";
+import { provideRuntimeServer, captureRequest } from "effect-powertools/tanstack-start";
 ```
 
-- **`runtimeServerFn(layer)`** — builds a `ManagedRuntime` once and injects it into TanStack's `ctx.context.runtime`. SIGTERM disposer registered idempotently.
-- **`observabilityServerFn(opts?)`** — TanStack server-fn equivalent of `createHandler`'s observability lifecycle. Opens a `## ${request.method} ${pathname}` subsegment, populates the X-Ray segment-document `http` block from the `Request`, and re-raises errors verbatim across the Effect boundary.
+- **`provideRuntimeServer(layer)`** — builds a `ManagedRuntime` once and injects it into TanStack's `ctx.context.runtime`. SIGTERM disposer registered idempotently.
+- **`captureRequest(opts?)`** — TanStack server-fn equivalent of `createLambdaHandler`'s observability lifecycle (a port of Powertools' middy `captureLambdaHandler`). Opens a `## ${request.method} ${pathname}` subsegment, populates the X-Ray segment-document `http` block from the `Request`, and re-raises errors verbatim across the Effect boundary. Pass `{ serviceName, resolveSpanName }` to override the default subsegment name.
 
 Wire them at the call site so TanStack's type inference flows through the middleware chain end-to-end.
 
@@ -269,11 +271,11 @@ The X-Ray "current segment" lives inside `aws-xray-sdk-core`'s `cls-hooked` name
 
 The metrics bridge wraps Effect's `globalMetricRegistry.get` so every counter / gauge / histogram / frequency hook also forwards to Powertools EMF. This patch happens lazily on first `PowertoolsMetricsLayer` build and persists for the life of the process. Re-binding to a different `PowertoolsMetrics` instance throws (`ensureInstalled` guard) — to test hot, call `__resetForTesting()` first.
 
-In practice: don't rebuild Powertools instances per-invocation. Construct them at module scope, pass them into `PowertoolsLayer({...})`, and let the runtime own them.
+In practice: don't rebuild Powertools instances per-invocation. Construct them at module scope, pass them into `PowertoolsBridgeLayer({...})`, and let the runtime own them.
 
 ### Handler factories require all three bridge services
 
-`createHandler` and `createSqsHandler` both `yield* PowertoolsLoggerService / TracerService / MetricsService` during acquire. If your `layer` doesn't include `PowertoolsLayer({...})` (or equivalent), the Effect will fail at runtime with a missing-service error. The TypeScript signature catches this at compile time via the `PowertoolsBridge | R` constraint.
+`createLambdaHandler` and `createSqsLambdaHandler` both `yield* PowertoolsLoggerService / TracerService / MetricsService` during acquire. If your `layer` doesn't include `PowertoolsBridgeLayer({...})` (or equivalent), the Effect will fail at runtime with a missing-service error. The TypeScript signature catches this at compile time via the `PowertoolsBridge | R` constraint.
 
 ### `@tanstack/react-start` is an optional peer dep
 

@@ -35,10 +35,13 @@ import {
 import { PowertoolsTracerService, stripXrayTraceIdPrefix } from "./tracer";
 
 // =============================================================================
-// runtimeServerFn — build a ManagedRuntime once and inject into ctx.context.
+// provideRuntimeServer — build a ManagedRuntime once and inject into
+// ctx.context.runtime so downstream middleware and route handlers can read
+// it. Returns the inner `async ({ next, ... })` server-fn body for
+// `createMiddleware().server(...)`.
 // =============================================================================
 
-export const runtimeServerFn = <A, E>(layer: Layer.Layer<A, E>) => {
+export const provideRuntimeServer = <A, E>(layer: Layer.Layer<A, E>) => {
   const runtime = ManagedRuntime.make(layer);
   registerSigtermDisposer(runtime);
   return async <TR, TM>(options: RequestServerOptions<TR, TM>) =>
@@ -46,7 +49,7 @@ export const runtimeServerFn = <A, E>(layer: Layer.Layer<A, E>) => {
 };
 
 // =============================================================================
-// observabilityServerFn — captureLambdaHandler port + X-Ray http block
+// captureRequest — captureLambdaHandler port + X-Ray http block
 //
 // Faithful port of Powertools middy `captureLambdaHandler`
 // (packages/tracer/src/middleware/middy.ts) plus the X-Ray segment-document
@@ -74,7 +77,7 @@ export const runtimeServerFn = <A, E>(layer: Layer.Layer<A, E>) => {
 // Effect's typed failure back to the original `throw`able at the boundary.
 // =============================================================================
 
-export interface ObservabilityOptions {
+export interface CaptureRequestOptions {
   readonly serviceName?: string;
   readonly resolveSpanName?: (request: Request, pathname: string) => string;
 }
@@ -154,7 +157,7 @@ class NextError {
 // `ManagedRuntime` is contravariant in `R` (effect/ManagedRuntime.d.ts:46 —
 // `interface ManagedRuntime<in R, out ER>`), so any runtime providing at least
 // `Tracer | Metrics` (e.g. `Logger | Tracer | Metrics`) is assignable here.
-export const observabilityServerFn = (opts: ObservabilityOptions = {}) =>
+export const captureRequest = (opts: CaptureRequestOptions = {}) =>
   async <TR, TM>(
     options: RequestServerOptions<TR, TM> & {
       context: {

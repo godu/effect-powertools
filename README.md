@@ -5,9 +5,9 @@ An [Effect](https://effect.website/) ↔ [AWS Lambda Powertools](https://docs.po
 - **Logger** — Effect's `Logger` flushes to Powertools Logger so structured logs land in CloudWatch with annotations + spans + cause traces.
 - **Tracer** — Effect spans become X-Ray subsegments, with cls-hooked isolation so concurrent fibers (`Effect.forEach({ concurrency: "unbounded" })`) keep their AWS SDK leaf subsegments correctly nested.
 - **Metrics** — Effect's `Metric` API emits Powertools EMF blobs to CloudWatch Metrics, units travel as tags.
-- **Handler factories** — `createHandler` (generic) and `createSqsHandler` (SQS sugar) wrap the cold-start / `addContext` / parent-subsegment / metric-flush boilerplate around any Effect program. Inputs are validated via `effect/Schema` before your code runs.
+- **Handler factories** — `createLambdaHandler` (generic) and `createSqsLambdaHandler` (SQS sugar) wrap the cold-start / `addContext` / parent-subsegment / metric-flush boilerplate around any Effect program. Inputs are validated via `effect/Schema` before your code runs.
 - **Batch processor** — `processPartialResponse` and `processFifoPartialResponse` give you Effect-native SQS partial-batch failures with auto-emitted `BatchRecordSuccesses` / `BatchRecordFailures` counters.
-- **TanStack Start integration** — `runtimeServerFn` + `observabilityServerFn` for full-stack Lambda apps.
+- **TanStack Start integration** — `provideRuntimeServer` + `captureRequest` for full-stack Lambda apps.
 
 ## Install
 
@@ -29,7 +29,7 @@ Peer deps: `effect`, `@aws-lambda-powertools/{logger,metrics,tracer}`, `aws-xray
 import { Logger as PowertoolsLogger } from "@aws-lambda-powertools/logger";
 import { Metrics as PowertoolsMetrics } from "@aws-lambda-powertools/metrics";
 import { Tracer as PowertoolsTracer } from "@aws-lambda-powertools/tracer";
-import { createSqsHandler, PowertoolsLayer } from "effect-powertools";
+import { createSqsLambdaHandler, PowertoolsBridgeLayer } from "effect-powertools";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -43,9 +43,9 @@ const ptLogger = new PowertoolsLogger();
 const ptTracer = new PowertoolsTracer();
 const ptMetrics = new PowertoolsMetrics();
 
-export const handler = createSqsHandler(
+export const handler = createSqsLambdaHandler(
   {
-    layer: PowertoolsLayer({ logger: ptLogger, tracer: ptTracer, metrics: ptMetrics }),
+    layer: PowertoolsBridgeLayer({ logger: ptLogger, tracer: ptTracer, metrics: ptMetrics }),
     recordSchema: OrderFromBody,
     serviceName: "orders",
   },

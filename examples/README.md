@@ -21,7 +21,7 @@ row — see [Worked example](#worked-example).
 | Service name | env: `POWERTOOLS_SERVICE_NAME=my-service` | same |
 | Metrics namespace | env: `POWERTOOLS_METRICS_NAMESPACE=my-namespace` | same |
 | Default log level | env: `POWERTOOLS_LOG_LEVEL=INFO` | same |
-| Construct | `Logger()`, `Tracer()`, `Metrics()` at module scope | `new Logger()`, `new Tracer()`, `new Metrics()` then `PowertoolsLayer({...})` and `ManagedRuntime.make(layer)` |
+| Construct | `Logger()`, `Tracer()`, `Metrics()` at module scope | `new Logger()`, `new Tracer()`, `new Metrics()` then `PowertoolsBridgeLayer({...})` and `ManagedRuntime.make(layer)` |
 | Bind Lambda context | `@logger.inject_lambda_context` | `ptLogger.addContext(context)` once at handler start |
 | Flush metrics | `@metrics.log_metrics` | `ptMetrics.publishStoredMetrics()` in a `finally` |
 | Cold-start counter | `@metrics.log_metrics(capture_cold_start_metric=True)` | `ptMetrics.captureColdStartMetric()` in the handler |
@@ -96,12 +96,12 @@ row — see [Worked example](#worked-example).
 
 | Instrument | Python | TypeScript / Effect |
 |---|---|---|
-| Counter (sum) | `metrics.add_metric("OrdersEmitted", MetricUnit.Count, 1)` | `counter("OrdersWritten", { unit: MetricUnit.Count })` then `yield* Metric.update(c, 1)` |
-| Histogram (explicit buckets) | `add_metric` with multiple values flushed per period; CloudWatch computes percentiles | `histogram("OrderAmountHistogram", [100, 1_000, 10_000, 100_000, 1_000_000], { unit: MetricUnit.Count })` |
-| Gauge (last value wins) | emit a counter with the value; CW reduces with `Last`/`Average` | `gauge("MemoryUsedBytes", { unit: MetricUnit.Bytes })` then `yield* Metric.update(g, bytes)` |
+| Counter (sum) | `metrics.add_metric("OrdersEmitted", MetricUnit.Count, 1)` | `Meter.counter("OrdersWritten", { unit: MetricUnit.Count })` then `yield* Metric.update(c, 1)` |
+| Histogram (explicit buckets) | `add_metric` with multiple values flushed per period; CloudWatch computes percentiles | `Meter.histogram("OrderAmountHistogram", [100, 1_000, 10_000, 100_000, 1_000_000], { unit: MetricUnit.Count })` |
+| Gauge (last value wins) | emit a counter with the value; CW reduces with `Last`/`Average` | `Meter.gauge("MemoryUsedBytes", { unit: MetricUnit.Bytes })` then `yield* Metric.update(g, bytes)` |
 | Timer (duration distribution) | `add_metric("WriteLatencyMs", MetricUnit.Milliseconds, ms)` | `Metric.timer("WriteLatency")` + `Metric.trackDuration(t)` as a `.pipe(...)` step |
-| Frequency (string occurrence count) | n/a — emit one counter per value manually | `frequency("OrderShape")` then `yield* Metric.update(f, "normal" \| "high" \| "poison")` — bridge emits one metric per distinct value (`OrderShape.normal`, `OrderShape.high`, `OrderShape.poison`) |
-| Count + duration around an Effect | wrap manually with `time.perf_counter()` | `timed("OrderProcess", effect)` — bridge adds `OrderProcess` counter + `OrderProcessDuration` timer |
+| Frequency (string occurrence count) | n/a — emit one counter per value manually | `Meter.frequency("OrderShape")` then `yield* Metric.update(f, "normal" \| "high" \| "poison")` — bridge emits one metric per distinct value (`OrderShape.normal`, `OrderShape.high`, `OrderShape.poison`) |
+| Count + duration around an Effect | wrap manually with `time.perf_counter()` | `Meter.instrument("OrderProcess", effect)` — bridge adds `OrderProcess` counter + `OrderProcessDuration` timer |
 | Cold start | `@metrics.log_metrics(capture_cold_start_metric=True)` | `ptMetrics.captureColdStartMetric()` |
 
 ### Units
@@ -168,17 +168,17 @@ All three deployed Lambdas now run on TypeScript + Effect via the bridge. The Py
   Powertools tracer so the AWS SDK Lambda Invoke shows up as an HTTPS
   subsegment in the X-Ray trace.
 - [`producer/src/handler.ts`](producer/src/handler.ts) — TypeScript/Effect
-  producer using `createHandler` from `effect-powertools`. Validates the
+  producer using `createLambdaHandler` from `effect-powertools`. Validates the
   trigger event via `Schema.Struct`, generates a synthetic order, sends to
   SQS via `tracer.captureAWSv3Client`-wrapped `@aws-sdk/client-sqs`. Emits
   Count / Bytes / Milliseconds metrics with `Metric.tagged` per-emission
   dimensions.
 - [`consumer/src/handler.ts`](consumer/src/handler.ts) — TypeScript/Effect
-  consumer using `createSqsHandler` from `effect-powertools`. Schema-validates
+  consumer using `createSqsLambdaHandler` from `effect-powertools`. Schema-validates
   each record body via `Schema.parseJson(Order)`. All 5 log levels, nested
   `Effect.withSpan`, `Effect.annotateCurrentSpan`, `Effect.tapError`,
-  every bridge metric helper (counter, histogram, gauge, frequency, timer,
-  `timed`), per-emission dimension via `Metric.tagged`, partial-batch failure
+  every `Meter` helper (counter, histogram, gauge, frequency, timer,
+  `Meter.instrument`), per-emission dimension via `Metric.tagged`, partial-batch failure
   via the bridge's `processPartialResponse` → `batchItemFailures`.
 - [`../effect-powertools/`](../effect-powertools) — the Effect↔Powertools
   bridge.

@@ -10,10 +10,9 @@ import * as Metric from "effect/Metric";
 import * as Schema from "effect/Schema";
 
 import {
-  counter,
-  createHandler,
-  histogram,
-  PowertoolsLayer,
+  createLambdaHandler,
+  Meter,
+  PowertoolsBridgeLayer,
 } from "effect-powertools";
 
 const ptLogger = new PowertoolsLogger();
@@ -50,10 +49,10 @@ class SendOrderError {
   }
 }
 
-const ordersEmitted = counter("OrdersEmitted", { unit: MetricUnit.Count });
-const sendFailures = counter("SendFailures", { unit: MetricUnit.Count });
-const ordersByShape = counter("OrdersByShape", { unit: MetricUnit.Count });
-const payloadBytes = histogram(
+const ordersEmitted = Meter.counter("OrdersEmitted", { unit: MetricUnit.Count });
+const sendFailures = Meter.counter("SendFailures", { unit: MetricUnit.Count });
+const ordersByShape = Meter.counter("OrdersByShape", { unit: MetricUnit.Count });
+const payloadBytes = Meter.histogram(
   "PayloadBytes",
   [128, 256, 512, 1024, 2048],
   { unit: MetricUnit.Bytes },
@@ -155,10 +154,10 @@ const program = Effect.gen(function* () {
   return { orderId: order.orderId };
 });
 
-export const handler = createHandler(
+export const handler = createLambdaHandler(
   {
     schema: TriggerEvent,
-    layer: PowertoolsLayer({
+    layer: PowertoolsBridgeLayer({
       logger: ptLogger,
       tracer: ptTracer,
       metrics: ptMetrics,
